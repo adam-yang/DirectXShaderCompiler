@@ -267,6 +267,7 @@ static void addHLSLPasses(bool HLSLHighLevel, unsigned OptLevel, hlsl::HLSLExten
 
   MPM.add(createSimplifyInstPass());
 
+  MPM.add(createPhiToSelectPassPass());
   MPM.add(createCFGSimplificationPass());
 
   MPM.add(createDeadCodeEliminationPass());

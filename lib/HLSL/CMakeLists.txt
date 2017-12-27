@@ -50,6 +50,7 @@ add_llvm_library(LLVMHLSL
   HLSignatureLower.cpp
   PauseResumePasses.cpp
   ReducibilityAnalysis.cpp
+  PhiToSelectPass.cpp
   WaveSensitivityAnalysis.cpp
 
   ADDITIONAL_HEADER_DIRS
