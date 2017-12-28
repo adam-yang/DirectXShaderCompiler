@@ -243,6 +243,8 @@ static void addHLSLPasses(bool HLSLHighLevel, unsigned OptLevel, hlsl::HLSLExten
     // mem2reg
     MPM.add(createPromoteMemoryToRegisterPass());
   }
+  MPM.add(createPhiToSelectPassPass());
+  MPM.add(createCFGSimplificationPass());
 
   if (OptLevel > 2) {
     MPM.add(createLoopRotatePass());
@@ -267,7 +269,6 @@ static void addHLSLPasses(bool HLSLHighLevel, unsigned OptLevel, hlsl::HLSLExten
 
   MPM.add(createSimplifyInstPass());
 
-  MPM.add(createPhiToSelectPassPass());
   MPM.add(createCFGSimplificationPass());
 
   MPM.add(createDeadCodeEliminationPass());

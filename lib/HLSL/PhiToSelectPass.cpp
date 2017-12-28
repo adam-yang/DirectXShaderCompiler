@@ -31,7 +31,7 @@
 
 using namespace llvm;
 
-static const unsigned NumPhiThreashold = 3;
+static const unsigned NumPhiThreashold = 12;
 
 class PhiToSelectPass : public FunctionPass {
   PredIteratorCache Preds;
@@ -40,6 +40,7 @@ public:
   static char ID;
   PhiToSelectPass() : FunctionPass(ID) {}
   bool runOnFunction(Function &F) override;
+  //std::unordered_set<Value *> ConvertedSelects;
 
   Function *MyF = nullptr;
 
@@ -47,10 +48,15 @@ public:
   // - Tree is totally linear.
   static bool GetTrivialTree_(Value *V, BasicBlock *BB, std::unordered_set<User *> &Seen, SmallVector<Instruction *, 5> &Tree) {
     if (auto I = dyn_cast<Instruction>(V)) {
+      auto opcode = I->getOpcode();
       if (I->getParent() != BB)
         return true;
       if (dyn_cast<PHINode>(I))
         return false;
+
+      if (opcode == Instruction::InsertElement) {
+        printf("AAAAYYY\n");
+      }
 
       if (Tree.size() > 0) {
         for (auto Use : I->users()) {
@@ -74,6 +80,9 @@ public:
     else if (dyn_cast<Constant>(V)) {
       return true;
     }
+    else if (dyn_cast<Argument>(V)) {
+      return true;
+    }
 
     return false;
   }
@@ -87,6 +96,10 @@ public:
   }
 
   static bool GetTrivialTree(Value *V, BasicBlock *BB, SmallVector<Instruction *, 5> &Tree) {
+    auto name = V->getName();
+    if (name == "add58.i") {
+      printf("AY\n");
+    }
     std::unordered_map<const Instruction *, unsigned> Order;
     std::unordered_set<User *> Seen;
     Tree.clear();
@@ -106,8 +119,9 @@ public:
     return true;
   }
 
-  static BasicBlock *GetCommonSinglePredecessorAndCond(BasicBlock *A, BasicBlock *B, Value **cond) {
+  static BasicBlock *GetCommonSinglePredecessorAndCond(BasicBlock *A, BasicBlock *B, Value **cond, BranchInst **Br) {
     *cond = nullptr;
+    *Br = nullptr;
 
     if (!A || !B)
       return nullptr;
@@ -122,6 +136,7 @@ public:
     if (auto BranchI = dyn_cast<BranchInst>(AP->getTerminator())) {
       if (BranchI->isConditional()) {
         *cond = BranchI->getCondition();
+        *Br = BranchI;
         return AP;
       }
     }
@@ -154,84 +169,136 @@ public:
     MyF->print(dbgs());
   }
 
-  bool ConvertPhi(PHINode *PN) {
+  bool CondUsedElsewhere(Value *Cond, BranchInst *Br) {
+#if 0
+    for (User *U : Cond->users()) {
+      if (ConvertedSelects.find(U) == ConvertedSelects.end() && U != Br) {
+        return true;
+      }
+    }
+    return false;
+#else
+    return Cond->getNumUses() > 1;
+#endif
+  }
+
+  struct CandidatePHI {
+    PHINode *PN = nullptr;
+
+    BasicBlock *BBs[4] = {};
+    Value *Incoming[4] = {};
+    SmallVector<Instruction *, 5> Trees[4];
+
+    Value *NextConds[2] = {};
+    BranchInst *NextBranches[2] = {};
+    SmallVector<Instruction *, 5> NextCondTrees[2];
+    BasicBlock *NextBBs[2] = {};
+
+    Value *TopCond = nullptr;
+    SmallVector<Instruction *, 5> TopCondTree;
+    BranchInst *TopBranch = nullptr;
+    BasicBlock *TopBB = nullptr;
+  };
+
+
+  void ConvertPhi(CandidatePHI &C, bool MoveCond) {
+    if (MoveCond) {
+      //DebugPrint("Before moving cond");
+      MoveTreeBefore(C.TopCondTree, C.PN);
+      MoveTreeBefore(C.NextCondTrees[0], C.PN);
+      MoveTreeBefore(C.NextCondTrees[1], C.PN);
+      //DebugPrint("After moving cond");
+    }
+
+    for (int i = 0; i < 4; i++) {
+      MoveTreeBefore(C.Trees[i], C.PN);
+    }
+
+
+    //DebugPrint("Before adding select");
+    IRBuilder<> Builder(C.PN);
+    Value *Next0 = Builder.CreateSelect(C.NextConds[0], C.Incoming[0], C.Incoming[1]);
+    Value *Next1 = Builder.CreateSelect(C.NextConds[1], C.Incoming[2], C.Incoming[3]);
+    Value *Final = Builder.CreateSelect(C.TopCond, Next0, Next1);
+    //ConvertedSelects.insert(Next0);
+    //ConvertedSelects.insert(Next1);
+    //ConvertedSelects.insert(Final);
+
+
+    C.PN->replaceAllUsesWith(Final);
+    C.PN->eraseFromParent();
+    //DebugPrint("After adding select");
+  }
+
+  bool GetCandidatePhi(PHINode *PN, CandidatePHI &C) {
     BasicBlock *TheBB = PN->getParent();
+    C.PN = PN;
 
     if (PN->getNumIncomingValues() == 4) {
       if (Preds.get(TheBB).size() != 4) {
         return false;
       }
 
-      BasicBlock *BBs[4] = {};
-      Value *Incoming[4] = {};
-      SmallVector<Instruction *, 5> Trees[4];
+      //BasicBlock *BBs[4] = {};
+      //Value *Incoming[4] = {};
+      //SmallVector<Instruction *, 5> Trees[4];
       for (unsigned i = 0; i < 4; i++) {
-        BBs[i] = PN->getIncomingBlock(i);
-        if (!BBs[i])
+        C.BBs[i] = PN->getIncomingBlock(i);
+        if (!C.BBs[i])
           return false;
-        if (!OnlyBranchesTo(BBs[i], TheBB))
+        if (!OnlyBranchesTo(C.BBs[i], TheBB))
           return false;
 
-        Incoming[i] = PN->getIncomingValue(i);
+        C.Incoming[i] = PN->getIncomingValue(i);
         // Get the use def chain that's in BB and results in 
         // the incoming value.
-        if (!GetTrivialTree(Incoming[i], BBs[i], Trees[i])) {
+        if (!GetTrivialTree(C.Incoming[i], C.BBs[i], C.Trees[i])) {
           return false;
         }
 
         // Incoming value is used in the incoming BB
-        if (HasUsesInBasicBlock(Incoming[i], BBs[i])) {
+        if (HasUsesInBasicBlock(C.Incoming[i], C.BBs[i])) {
           return false;
         }
       }
 
-      Value *NextConds[2] = {};
-      SmallVector<Instruction *, 5> NextCondTrees[2];
-      BasicBlock *NextBBs[2] = {
-        GetCommonSinglePredecessorAndCond(BBs[0], BBs[1], &NextConds[0]),
-        GetCommonSinglePredecessorAndCond(BBs[2], BBs[3], &NextConds[1]),
-      };
+      //Value *NextConds[2] = {};
+      //BranchInst *NextBranches[2] = {};
+      //SmallVector<Instruction *, 5> NextCondTrees[2];
+      //BasicBlock *NextBBs[2] = {
+      C.NextBBs[0] = GetCommonSinglePredecessorAndCond(C.BBs[0], C.BBs[1], &C.NextConds[0], &C.NextBranches[0]);
+      C.NextBBs[1] = GetCommonSinglePredecessorAndCond(C.BBs[2], C.BBs[3], &C.NextConds[1], &C.NextBranches[1]);
 
-      if (!NextBBs[0] || !NextBBs[1])
+      if (!C.NextBBs[0] || !C.NextBBs[1])
         return false;
 
       for (int i = 0; i < 2; i++) {
         // If the middle conds are not used just for
         // branching, then the graph is more complicated.
         // abort.
-        if (NextConds[i]->getNumUses() > 1) {
+        if (CondUsedElsewhere(C.NextConds[i], C.NextBranches[i])) {
           return false;
         }
 
-        if (!GetTrivialTree(NextConds[i], NextBBs[i], NextCondTrees[i])) {
+        if (!GetTrivialTree(C.NextConds[i], C.NextBBs[i], C.NextCondTrees[i])) {
           return false;
         }
       }
 
-      Value *TopCond = nullptr;
-      BasicBlock *TopBB = GetCommonSinglePredecessorAndCond(NextBBs[0], NextBBs[1], &TopCond);
-      if (!TopBB)
+      //Value *TopCond = nullptr;
+      //BranchInst *TopBranch = nullptr;
+      //BasicBlock *TopBB = GetCommonSinglePredecessorAndCond(C.NextBBs[0], C.NextBBs[1], &C.TopCond, &C.TopBranch);
+      C.TopBB = GetCommonSinglePredecessorAndCond(C.NextBBs[0], C.NextBBs[1], &C.TopCond, &C.TopBranch);
+      if (!C.TopBB)
         return false;
 
-
-      for (unsigned i = 0; i < 4; i++) {
-        MoveTreeBefore(Trees[i], PN);
+      if (CondUsedElsewhere(C.TopCond, C.TopBranch)) {
+        return false;
       }
 
-      MoveTreeBefore(NextCondTrees[0], PN);
-      MoveTreeBefore(NextCondTrees[1], PN);
-
-      DebugPrint("After moving cond");
-
-      IRBuilder<> Builder(PN);
-      Value *Next0 = Builder.CreateSelect(NextConds[0], Incoming[0], Incoming[1]);
-      Value *Next1 = Builder.CreateSelect(NextConds[1], Incoming[2], Incoming[3]);
-      Value *Final = Builder.CreateSelect(TopCond, Next0, Next1);
-
-      DebugPrint("After moving cond");
-
-      PN->replaceAllUsesWith(Final);
-      PN->eraseFromParent();
+      if (!GetTrivialTree(C.TopCond, C.TopBB, C.TopCondTree)) {
+        return false;
+      }
 
       return true;
     }
@@ -245,31 +312,43 @@ public:
 };
 
 bool PhiToSelectPass::runOnFunction(Function &F) {
+  if (F.getBasicBlockList().size() == 1 && (*F.begin()).getInstList().size() == 1) { return false; }
   this->MyF = &F;
+  DebugPrint("Before anything");
 
   bool Changed = false;
   for (auto &FI : F) {
     BasicBlock &BB = FI;
-    SmallVector<PHINode *, NumPhiThreashold> Phis;
+    //SmallVector<PHINode *, NumPhiThreashold> Phis;
+    SmallVector<CandidatePHI, NumPhiThreashold> Phis;
 
-    int NumPhi = 0;
     for (auto &BBI : BB) {
       Instruction &I = BBI;
       if (auto PN = dyn_cast<PHINode>(&I)) {
-        if (NumPhi >= NumPhiThreashold) {
+        if (Phis.size() >= NumPhiThreashold) {
           return false;
         }
-        Phis.push_back(PN);
-        NumPhi++;
+        CandidatePHI Candidate;
+        if (!GetCandidatePhi(PN, Candidate)) {
+          Phis.clear();
+          break;
+        }
+        Phis.push_back(Candidate);
+      }
+      else {
+        break;
       }
     }
 
-    for (int i = Phis.size() - 1; i >= 0; i--) {
-      auto PN = Phis[i];
-      Changed |= ConvertPhi(PN);
+    int i = 0;
+    for (auto &C : Phis) {
+      ConvertPhi(C, i == 0);
+      Changed = true;
+      i++;
     }
   }
 
+  DebugPrint("After everything");
   return Changed;
 }
 
