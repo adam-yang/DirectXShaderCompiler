@@ -1,21 +1,27 @@
 
 #include "llvm/Analysis/Passes.h"
-#include "llvm/Analysis/DivergenceAnalysis.h"
+//#include "llvm/Analysis/DivergenceAnalysis.h"
 #include "llvm/Pass.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Support/GraphWriter.h"
+#include "llvm/Support/Debug.h"
 
 #include "dxc/HLSL/DxilGenerationPass.h"
 #include "dxc/HLSL/DxilModule.h"
+#include "dxc/HLSL/DxilDivergenceAnalysis.h"
 
 using namespace llvm;
 
 class PhiToSelect : public FunctionPass
 {
-  DivergenceAnalysis *DA = nullptr;
+  unsigned MergeCount = 0;
+  DxilDivergenceAnalysis *DA = nullptr;
   Module *M = nullptr;
 public:
   static char ID;
@@ -28,11 +34,15 @@ public:
 
 char PhiToSelect::ID = 0;
 void PhiToSelect::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.addRequired<DivergenceAnalysis>();
+  AU.addRequired<DxilDivergenceAnalysis>();
 }
 
-static bool HintToPreserveCF(Module *M, BranchInst *Br) {
-  return false;
+static bool HintToPreserveCF(BranchInst *Br) {
+  // If there are metadata attached,
+  // don't merge this.
+  // If it's marked [Flatten], then
+  // something else will probably
+  // flatten it.
   if (Br->hasMetadataOtherThanDebugLoc()) {
     return true;
   }
@@ -79,6 +89,8 @@ bool CheckDom(Value *V, BasicBlock *BB, SmallPtrSet<Instruction *, N> &InstToMov
   if (auto I = dyn_cast<Instruction>(V)) {
     if (I->getParent() != BB)
       return true;
+
+    InstToMove.insert(I);
     for (unsigned i = 0; i < I->getNumOperands(); i++) {
       auto *Op = I->getOperand(i);
       if (!CheckDom(Op, BB, InstToMove))
@@ -108,11 +120,11 @@ template<unsigned N>
 static bool HasInstructionsMissing(BasicBlock *BB, SmallPtrSet<Instruction *, N> &InstToMove) {
   for (auto BBI = BB->begin(); !isa<TerminatorInst>(BBI); BBI++) {
     Instruction &I = *BBI;
-    if (!InstToMove.count(&I)) {
-      return false;
+    if (!InstToMove.count(&I) && !isa<DbgInfoIntrinsic>(I)) {
+      return true;
     }
   }
-  return true;
+  return false;
 }
 
 static void MoveAllInstsTo(BasicBlock *BB, Instruction *InsertPoint) {
@@ -132,6 +144,11 @@ static void MoveAllInstsTo(BasicBlock *BB, Instruction *InsertPoint) {
 template<unsigned N>
 bool TryMergeDiamond(BasicBlock &BB, MergeCandidate &Candidate, SmallVector<PHINode *, N> &Phis) {
   auto TopBB = Candidate.Br->getParent();
+
+  bool Reversed = false;
+  if (Candidate.Br->getSuccessor(0) == Candidate.BB[1]) {
+    Reversed = true;
+  }
 
   if (Candidate.BB[0]->getSingleSuccessor() != &BB || Candidate.BB[1]->getSingleSuccessor() != &BB) {
     return false;
@@ -158,7 +175,14 @@ bool TryMergeDiamond(BasicBlock &BB, MergeCandidate &Candidate, SmallVector<PHIN
       PN->getIncomingValueForBlock(Candidate.BB[0]),
       PN->getIncomingValueForBlock(Candidate.BB[1]),
     };
-    auto Sel = SelectInst::Create(Candidate.Cond, IV[0], IV[1], "", TopBB->getTerminator());
+
+    if (Reversed) {
+      auto Tmp = IV[0];
+      IV[0] = IV[1];
+      IV[1] = Tmp;
+    }
+
+    SelectInst *Sel = SelectInst::Create(Candidate.Cond, IV[0], IV[1], "sel", TopBB->getTerminator());
     PN->addIncoming(Sel, TopBB);
 
     PN->removeIncomingValue(Candidate.BB[0]);
@@ -184,7 +208,11 @@ template<unsigned N>
 bool TryMergeTriangle(BasicBlock &BB, MergeCandidate &Candidate, SmallVector<PHINode *, N> &Phis) {
   auto TopBB = Candidate.Br->getParent();
   auto MidBB = Candidate.BB[0] == TopBB ? Candidate.BB[1] : Candidate.BB[0];
-  
+
+  bool Reversed = false;
+  if (Candidate.Br->getSuccessor(0) == MidBB) {
+    Reversed = true;
+  }
 
   if (MidBB->getSingleSuccessor() != &BB) {
     return false;
@@ -209,10 +237,15 @@ bool TryMergeTriangle(BasicBlock &BB, MergeCandidate &Candidate, SmallVector<PHI
       PN->getIncomingValueForBlock(MidBB),
     };
 
-    PN->removeIncomingValue(TopBB);
-    auto Sel = SelectInst::Create(Candidate.Cond, IV[0], IV[1], "", TopBB->getTerminator());
-    PN->addIncoming(Sel, TopBB);
+    if (Reversed) {
+      auto Tmp = IV[0];
+      IV[0] = IV[1];
+      IV[1] = Tmp;
+    }
 
+    SelectInst *Sel = SelectInst::Create(Candidate.Cond, IV[0], IV[1], "Sel", TopBB->getTerminator());
+    PN->removeIncomingValue(TopBB);
+    PN->addIncoming(Sel, TopBB);
     PN->removeIncomingValue(MidBB);
   }
 
@@ -227,12 +260,14 @@ bool TryMergeTriangle(BasicBlock &BB, MergeCandidate &Candidate, SmallVector<PHI
 template<unsigned N>
 static bool TryMergeCandidate(BasicBlock &BB, MergeCandidate &Candidate, SmallVector<PHINode *, N> &Phis) {
   auto TopBB = Candidate.Br->getParent();
+
   if (TopBB == Candidate.BB[0] || TopBB == Candidate.BB[1]) {
     return TryMergeTriangle(BB, Candidate, Phis);
   }
   else {
     return TryMergeDiamond(BB, Candidate, Phis);
   }
+
   return false;
 }
 
@@ -264,7 +299,9 @@ bool PhiToSelect::DoBasicBlock(BasicBlock &BB) {
       auto BB2 = PN->getIncomingBlock(j);
       MergeCandidate Candidate;
       if (GetCommonSinglePredecessorAndCond(BB1, BB2, &Candidate.Cond, &Candidate.Br)) {
-        if (DA->isDivergent(Candidate.Cond) && !HintToPreserveCF(M, Candidate.Br)) {
+        if (DA->isDivergent(Candidate.Cond) &&
+          !HintToPreserveCF(Candidate.Br))
+        {
           Candidate.BB[0] = BB1;
           Candidate.BB[1] = BB2;
           Candidates.push_back(Candidate);
@@ -275,24 +312,46 @@ bool PhiToSelect::DoBasicBlock(BasicBlock &BB) {
 
   bool Changed = false;
   for (auto &Candidate : Candidates) {
-    Changed |= TryMergeCandidate(BB, Candidate, Phis);
+    bool Merged = TryMergeCandidate(BB, Candidate, Phis);
+    if (Merged) {
+      MergeCount++;
+    }
+    Changed |= Merged;
+  }
+
+  if (Changed) {
   }
 
   return Changed;
 }
 
 bool PhiToSelect::runOnFunction(Function &F) {
-
   M = F.getParent();
-  DA = &getAnalysis<DivergenceAnalysis>();
+  DA = &getAnalysis<DxilDivergenceAnalysis>();
   bool Changed = false;
-  for (auto &FI : F) {
-    while (1) {
-      bool LocalChanged = DoBasicBlock(FI);
-      if (!LocalChanged)
-        break;
-      Changed |= LocalChanged;
+
+  while (1) {
+    SmallVector<BasicBlock *, 5> ChangedBBs;
+    for (auto &FI : F) {
+      bool BBChanged = false;
+      while (1) {
+        bool LocalChanged = DoBasicBlock(FI);
+        if (!LocalChanged)
+          break;
+        BBChanged |= LocalChanged;
+        Changed |= LocalChanged;
+      }
+
+      if (BBChanged) {
+        ChangedBBs.push_back(&FI);
+      }
     }
+
+    for (auto BB : ChangedBBs)
+      MergeBlockIntoPredecessor(BB);
+
+    if (ChangedBBs.size() == 0)
+      break;
   }
   return Changed;
 }
@@ -301,6 +360,6 @@ FunctionPass *llvm::createPhiToSelectPass() { return new PhiToSelect(); }
 
 INITIALIZE_PASS_BEGIN(PhiToSelect, "phi-to-sel",
                       "Straight line strength reduction", false, false)
-INITIALIZE_PASS_DEPENDENCY(DivergenceAnalysis)
+INITIALIZE_PASS_DEPENDENCY(DxilDivergenceAnalysis)
 INITIALIZE_PASS_END(PhiToSelect, "phi-to-sel",
                     "Straight line strength reduction", false, false)

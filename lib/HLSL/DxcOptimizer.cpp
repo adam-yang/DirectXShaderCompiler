@@ -168,6 +168,8 @@ HRESULT SetupRegistryPassForHLSL() {
     initializeVerifierLegacyPassPass(Registry);
     // INIT-PASSES:END
     // Not schematized - exclusively for compiler authors.
+    initializePhiToSelectPass(Registry);
+    initializeDxilDivergenceAnalysisPass(Registry);
     initializeCFGPrinterPasses(Registry);
   }
   CATCH_CPP_RETURN_HRESULT();

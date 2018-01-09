@@ -72,7 +72,8 @@ ModulePass *createDxilTranslateRawBuffer();
 ModulePass *createNoPausePassesPass();
 ModulePass *createPausePassesPass();
 ModulePass *createResumePassesPass();
-FunctionPass *createPhiToSelectPassPass();
+FunctionPass *createPhiToSelectPass();
+FunctionPass *createDxilDivergenceAnalysisPass();
 
 void initializeDxilCondenseResourcesPass(llvm::PassRegistry&);
 void initializeDxilEliminateOutputDynamicIndexingPass(llvm::PassRegistry&);
@@ -103,7 +104,8 @@ void initializeDxilDebugInstrumentationPass(llvm::PassRegistry&);
 void initializeNoPausePassesPass(llvm::PassRegistry&);
 void initializePausePassesPass(llvm::PassRegistry&);
 void initializeResumePassesPass(llvm::PassRegistry&);
-void initializePhiToSelectPassPass(llvm::PassRegistry&);
+void initializePhiToSelectPass(llvm::PassRegistry&);
+void initializeDxilDivergenceAnalysisPass(llvm::PassRegistry&);
 
 bool AreDxilResourcesDense(llvm::Module *M, hlsl::DxilResourceBase **ppNonDense);
 
