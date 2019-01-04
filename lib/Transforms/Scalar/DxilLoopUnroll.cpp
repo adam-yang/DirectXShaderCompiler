@@ -527,7 +527,79 @@ static bool Mem2Reg(Function &F, DominatorTree &DT, AssumptionCache &AC) {
   return Changed;
 }
 
+static void FindBlocksInExtendedLoop(Loop *L, const SmallVectorImpl<BasicBlock *> &ExitBlocks, SmallVectorImpl<BasicBlock *> &BlocksInLoop) {
+  BlocksInLoop.append(L->getBlocks().begin(), L->getBlocks().end());
+  BlocksInLoop.append(ExitBlocks.begin(), ExitBlocks.end());
+}
 
+static void FindExtendedBlocks(Loop *L, DominatorTree *DT, SmallVectorImpl<BasicBlock *> &Blocks) {
+  SmallVector<BasicBlock *, 8> WorkList;
+  std::unordered_set<BasicBlock *> Seen;
+  BasicBlock *Header = L->getHeader();
+
+  L->getExitBlocks(WorkList);
+  Seen.insert(WorkList.begin(), WorkList.end());
+
+  while (WorkList.size()) {
+    BasicBlock *BB = WorkList.pop_back_val();
+    Seen.insert(BB);
+    if (DT->dominates(Header, BB)) {
+      Blocks.push_back(BB);
+      for (BasicBlock *Succ : successors(BB)) {
+        if (!Seen.count(Succ)) {
+          WorkList.push_back(Succ);
+        }
+      }
+    }
+  }
+}
+
+template<typename T>
+bool HasEdgeInto(BasicBlock *BB, const T &Set) {
+  for (BasicBlock *Succ : successors(BB))
+    if (Set.count(Succ))
+      return true;
+  return false;
+}
+#if 0
+void DefineNewExits(
+  Loop *L,
+  const SmallVectorImpl<BasicBlock *> &BlocksInExtendedLoop,
+  const SmallVectorImpl<BasicBlock *> &ExtendedBlocks,
+  SmallVectorImpl<BasicBlock *> &Exits,
+  SmallVectorImpl<BasicBlock *> &FakeExits)
+{
+  std::unordered_set<BasicBlock *> MustIncludeSet;
+  FindProblemBlocks(L->getHeader(), BlocksInExtendedLoop, MustIncludeSet);
+
+  SmallVector<BasicBlock *, 16> WorkList(ExtendedBlocks.begin(), ExtendedBlocks.end());
+  std::unordered_set<BasicBlock *> Seen(ExtendedBlocks.begin(), ExtendedBlocks.end());
+
+  SmallVector<BasicBlock *, 16> ExtendedBlocksMustIncluded;
+  for (BasicBlock *BB : ExtendedBlocks) {
+    if (!HasEdgeInto(BB, BlocksInExtendedLoop)) {
+      if (MustIncludeSet.count(BB)) {
+        ExtendedBlocksMustIncluded.push_back(BB);
+      }
+      else {
+        Exits.push_back(BB);
+      }
+    }
+  }
+
+
+
+}
+#endif
+
+static void AddChainToSet(BasicBlock *BB, SetVector<BasicBlock *> &ToBeCloned) {
+  if (ToBeCloned.count(BB))
+    return;
+  ToBeCloned.insert(BB);
+  for (BasicBlock *Pred : predecessors(BB)) {
+    AddChainToSet(Pred, ToBeCloned);
+  }
+}
 
 bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
 
@@ -561,10 +633,18 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
   Loop *OuterL = L->getParentLoop();
   BasicBlock *Latch = L->getLoopLatch();
   BasicBlock *Header = L->getHeader();
-  BasicBlock *Predecessor = L->getLoopPredecessor();
+  BasicBlock *Predecessor = L->getLoopPreheader();
 
   // Quit if we don't have a single latch block or predecessor
   if (!Latch || !Predecessor) {
+    return false;
+  }
+  if (BasicBlock *PPH = Predecessor->getSinglePredecessor()) {
+    if (PPH->getUniqueSuccessor()) {
+      return false;
+    }
+  }
+  else {
     return false;
   }
 
@@ -579,17 +659,49 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
     Mem2Reg(*F, *DT, *AC);
   }
 
-  SmallVector<BasicBlock *, 16> ExitBlocks;
-  L->getExitBlocks(ExitBlocks);
-  std::unordered_set<BasicBlock *> ExitBlockSet(ExitBlocks.begin(), ExitBlocks.end());
+  SmallVector<BasicBlock *, 8> ExtendedBlocks;
+  FindExtendedBlocks(L, DT, ExtendedBlocks);
+  std::unordered_set<BasicBlock *> ExtendedBlocksSet(ExtendedBlocks.begin(), ExtendedBlocks.end());
 
-  SmallVector<BasicBlock *, 16> BlocksInLoop; // Set of blocks including both body and exits
-  BlocksInLoop.append(L->getBlocks().begin(), L->getBlocks().end());
-  BlocksInLoop.append(ExitBlocks.begin(), ExitBlocks.end());
+  SmallVector<BasicBlock *, 16> BlocksInExtendedLoop; // Set of blocks including both body and exits
+  BlocksInExtendedLoop.append(L->getBlocks().begin(), L->getBlocks().end());
+  BlocksInExtendedLoop.append(ExtendedBlocks.begin(), ExtendedBlocks.end());
+  std::unordered_set<BasicBlock *> BlocksInExtendedLoopSet(BlocksInExtendedLoop.begin(), BlocksInExtendedLoop.end());
 
-  // Heuristically find blocks that likely need to be unrolled
   std::unordered_set<BasicBlock *> ProblemBlocks;
-  FindProblemBlocks(L->getHeader(), BlocksInLoop, ProblemBlocks);
+  FindProblemBlocks(L->getHeader(), BlocksInExtendedLoop, ProblemBlocks);
+
+  SetVector<BasicBlock *> ToBeCloned; // List of blocks that will be cloned.
+  ToBeCloned.insert(L->getBlocks().begin(), L->getBlocks().end()); // Include the body right away
+
+  for (BasicBlock *BB : ExtendedBlocks) {
+    if (ProblemBlocks.count(BB))
+      AddChainToSet(BB, ToBeCloned);
+  }
+
+  SmallVector<BasicBlock *, 8> NewExits; // New set of exit blocks as boundaries for LCSSA
+  {
+    std::unordered_set<BasicBlock *> NewExitsSet; // New set of exit blocks as boundaries for LCSSA
+    for (BasicBlock *BB : ToBeCloned) {
+      for (BasicBlock *Succ : successors(BB)) {
+        if (!ToBeCloned.count(Succ)) {
+          if (!NewExitsSet.count(Succ)) {
+            NewExitsSet.insert(Succ);
+            NewExits.push_back(Succ);
+          }
+        }
+      }
+    }
+  }
+
+  // Simplify the PHI nodes that have single incoming value. The original LCSSA form
+  // (if exists) does not necessarily work for our unroll because we may be unrolling
+  // from a different boundary.
+  for (BasicBlock *BB : ToBeCloned)
+    hlsl::dxilutil::SimplifyTrivialPHIs(BB);
+
+  // Re-establish LCSSA form to get ready for unrolling.
+  CreateLCSSA(ToBeCloned, NewExits, L, *DT, LI);
 
   // Keep track of the PHI nodes at the header.
   SmallVector<PHINode *, 16> PHIs;
@@ -601,64 +713,6 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
       break;
     }
   }
-
-  SetVector<BasicBlock *> ToBeCloned; // List of blocks that will be cloned.
-  for (BasicBlock *BB : L->getBlocks()) // Include the body right away
-    ToBeCloned.insert(BB);
-
-  // Find the exit blocks that also need to be included
-  // in the unroll.
-  SmallVector<BasicBlock *, 8> NewExits; // New set of exit blocks as boundaries for LCSSA
-  SmallVector<BasicBlock *, 8> FakeExits; // Set of blocks created to allow cloning original exit blocks.
-  for (BasicBlock *BB : ExitBlocks) {
-    bool CloneThisExitBlock = ProblemBlocks.count(BB);
-
-    if (CloneThisExitBlock) {
-      ToBeCloned.insert(BB);
-
-      // If we are cloning this basic block, we must create a new exit
-      // block for inserting LCSSA PHI nodes.
-      BasicBlock *FakeExit = BasicBlock::Create(BB->getContext(), "loop.exit.new");
-      F->getBasicBlockList().insert(BB, FakeExit);
-
-      TerminatorInst *OldTerm = BB->getTerminator();
-      OldTerm->removeFromParent();
-      FakeExit->getInstList().push_back(OldTerm);
-
-      BranchInst::Create(FakeExit, BB);
-      for (BasicBlock *Succ : successors(FakeExit)) {
-        for (Instruction &I : *Succ) {
-          if (PHINode *PN = dyn_cast<PHINode>(&I)) {
-            for (unsigned i = 0; i < PN->getNumIncomingValues(); i++) {
-              if (PN->getIncomingBlock(i) == BB)
-                PN->setIncomingBlock(i, FakeExit);
-            }
-          }
-        }
-      }
-
-      NewExits.push_back(FakeExit);
-      FakeExits.push_back(FakeExit);
-
-      // Update Dom tree with new exit
-      if (!DT->getNode(FakeExit))
-        DT->addNewBlock(FakeExit, BB);
-    }
-    else {
-      // If we are not including this exit block in the unroll,
-      // use it for LCSSA as normal.
-      NewExits.push_back(BB);
-    }
-  }
-
-  // Simplify the PHI nodes that have single incoming value. The original LCSSA form
-  // (if exists) does not necessarily work for our unroll because we may be unrolling
-  // from a different boundary.
-  for (BasicBlock *BB : BlocksInLoop)
-    hlsl::dxilutil::SimplifyTrivialPHIs(BB);
-
-  // Re-establish LCSSA form to get ready for unrolling.
-  CreateLCSSA(ToBeCloned, NewExits, L, *DT, LI);
 
   SmallVector<std::unique_ptr<LoopIteration>, 16> Iterations; // List of cloned iterations
   bool Succeeded = false;
@@ -678,7 +732,7 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
       CurIteration.VarMap[BB] = ClonedBB;
       ClonedBB->insertInto(F, Header);
 
-      if (ExitBlockSet.count(BB))
+      if (ExtendedBlocksSet.count(BB))
         CurIteration.Extended.insert(ClonedBB);
 
       CurIteration.Body.push_back(ClonedBB);
@@ -817,12 +871,6 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
             OuterL->addBasicBlockToLoop(BB, *LI);
           }
         }
-      }
-
-      // Our newly created exit blocks may need to be added to outer loop
-      for (BasicBlock *BB : FakeExits) {
-        if (HasSuccessorsInLoop(BB, OuterL))
-          OuterL->addBasicBlockToLoop(BB, *LI);
       }
 
       // Cloned exit blocks may need to be added to outer loop
