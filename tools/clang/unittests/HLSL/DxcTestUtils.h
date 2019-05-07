@@ -61,6 +61,7 @@ public:
   FileRunCommandPart(FileRunCommandPart&&) = default;
   
   void Run(dxc::DxcDllSupport &DllSupport, const FileRunCommandPart *Prior);
+  void RunHashTests(dxc::DxcDllSupport &DllSupport);
   
   void ReadOptsForDxc(hlsl::options::MainArgs &argStrings, hlsl::options::DxcOpts &Opts);
 
@@ -77,6 +78,7 @@ public:
 private:
   void RunFileChecker(const FileRunCommandPart *Prior);
   void RunDxc(dxc::DxcDllSupport &DllSupport, const FileRunCommandPart *Prior);
+  void RunDxcHashTest(dxc::DxcDllSupport &DllSupport);
   void RunDxv(dxc::DxcDllSupport &DllSupport, const FileRunCommandPart *Prior);
   void RunOpt(dxc::DxcDllSupport &DllSupport, const FileRunCommandPart *Prior);
   void RunD3DReflect(dxc::DxcDllSupport &DllSupport, const FileRunCommandPart *Prior);
@@ -91,6 +93,7 @@ class FileRunTestResult {
 public:
   std::string ErrorMessage;
   int RunResult;
+  static FileRunTestResult RunHashTestFromFileCommands(LPCWSTR fileName);
   static FileRunTestResult RunFromFileCommands(LPCWSTR fileName);
   static FileRunTestResult RunFromFileCommands(LPCWSTR fileName, dxc::DxcDllSupport &dllSupport);
 };
