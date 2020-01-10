@@ -122,7 +122,7 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
             FunctionType *FT = FunctionType::get(Ty, Ty, false);
             CopyF = cast<Function>(M.getOrInsertFunction(str, FT));
             CopyF->addFnAttr(Attribute::AttrKind::ReadNone);
-            CopyF->addFnAttr(Attribute::AttrKind::Convergent);
+            //CopyF->addFnAttr(Attribute::AttrKind::Convergent);
             CopyFunctions[Ty] = CopyF;
           }
 

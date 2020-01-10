@@ -111,6 +111,12 @@ bool DCE::runOnFunction(Function &F) {
   bool MadeChange = false;
   while (!WorkList.empty()) {
     Instruction *I = WorkList.back();
+    if (auto *ci = dyn_cast<CallInst>(I)) {
+      if (auto *f = ci->getCalledFunction()) {
+        if (f->getName().startswith("dx.copy."))
+          printf("ohmy\n");
+      }
+    }
     WorkList.pop_back();
 
     if (isInstructionTriviallyDead(I, TLI)) { // If the instruction is dead.
