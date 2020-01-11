@@ -286,7 +286,7 @@ bool DxilFinalizeNoops::LowerPreserves(Module &M) {
       if (Value *NopV = GetValue(F, Ty)) {
         Value *NewSrc = nullptr;
         if (Ty->isIntegerTy()) {
-          NewSrc = B.CreateOr(NopV, Src);
+          NewSrc = B.CreateOr(Src, NopV);
         }
         else if (Ty->isFloatingPointTy()) {
           NewSrc = B.CreateFAdd(Src, NopV);
