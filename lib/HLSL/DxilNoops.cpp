@@ -24,13 +24,14 @@ using namespace llvm;
 
 namespace {
 StringRef kNoopName = "dx.noop";
-StringRef kCopyPrefix = "dx.copy.";
+StringRef kPreservePrefix = "dx.preserve.";
 StringRef kNothingName = "dx.nothing";
+StringRef kPreserveName = "dx.preserve.value";
 }
 
-bool hlsl::IsDxilCopy(CallInst *CI) {
+bool hlsl::IsDxilPreserve(CallInst *CI) {
   if (Function *F = CI->getCalledFunction())
-    return F->getName().startswith(kCopyPrefix);
+    return F->getName().startswith(kPreservePrefix);
   return false;
 }
 
@@ -65,7 +66,7 @@ char DxilInsertNoops::ID;
 bool DxilInsertNoops::runOnFunction(Function &F) {
   Module &M = *F.getParent();
   Function *NoopF = nullptr;
-  SmallDenseMap<Type *, Function *> CopyFunctions;
+  SmallDenseMap<Type *, Function *> PreserveFunctions;
   bool Changed = false;
 
   // Find instructions where we want to insert nops
@@ -74,6 +75,8 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
       bool InsertNop = false;
       Value *CopySource = nullptr;
       Instruction &I = *(It++);
+      Value *PrevValuePtr = nullptr;
+
       // If we are calling a real function, insert one
       // at the callsite.
       if (CallInst *Call = dyn_cast<CallInst>(&I)) {
@@ -91,12 +94,13 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
       // insert a nop there.
       else if (StoreInst *Store = dyn_cast<StoreInst>(&I)) {
         Value *V = Store->getValueOperand();
-        if (isa<LoadInst>(V)) {
+        if (isa<Constant>(V)) {
+          InsertNop = true;
+        }
+        else {
           InsertNop = true;
           CopySource = V;
-        }
-        else if (isa<Constant>(V)) {
-          InsertNop = true;
+          PrevValuePtr = Store->getPointerOperand();
         }
       }
       // If we have a return, just to be safe.
@@ -112,36 +116,33 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
         {
           Type *Ty = CopySource->getType()->getScalarType();
 
-          Function *CopyF = CopyFunctions[Ty];
-          if (!CopyF) {
-            std::string str = kCopyPrefix;
+          Function *PreserveF = PreserveFunctions[Ty];
+          if (!PreserveF) {
+            std::string str = kPreservePrefix;
             raw_string_ostream os(str);
             Ty->print(os);
             os.flush();
 
-            FunctionType *FT = FunctionType::get(Ty, Ty, false);
-            CopyF = cast<Function>(M.getOrInsertFunction(str, FT));
-            CopyF->addFnAttr(Attribute::AttrKind::ReadNone);
-            //CopyF->addFnAttr(Attribute::AttrKind::Convergent);
-            CopyFunctions[Ty] = CopyF;
+            FunctionType *FT = FunctionType::get(Ty, { Ty, Ty }, false);
+            PreserveF = cast<Function>(M.getOrInsertFunction(str, FT));
+            PreserveF->addFnAttr(Attribute::AttrKind::ReadNone);
+            PreserveF->addFnAttr(Attribute::AttrKind::NoUnwind);
+            PreserveFunctions[Ty] = PreserveF;
           }
-
-          auto MarkCopy = [&I, CopyF](Value *Src) {
-            CallInst *Copy = CallInst::Create(CopyF, ArrayRef<Value *> {Src}, "copy", &I);
-            Copy->setDebugLoc(I.getDebugLoc());
-            return Copy;
-          };
 
           if (CopySource->getType()->isVectorTy()) {
             Type *VecTy = CopySource->getType();
 
             SmallVector<Value *, 4> Elements;
             IRBuilder<> B(&I);
+            Instruction *Last_Value_Vec = B.CreateLoad(PrevValuePtr);
+
             for (unsigned i = 0; i < VecTy->getVectorNumElements(); i++) {
               auto *EE = B.CreateExtractElement(CopySource, i);
-              Instruction *Copy = CallInst::Create(CopyF, ArrayRef<Value *> {EE}, "copy", &I);
-              Copy->setDebugLoc(I.getDebugLoc());
-              Elements.push_back(Copy);
+              Value *Last_Value = B.CreateExtractElement(Last_Value_Vec, i);
+              Instruction *Preserve = CallInst::Create(PreserveF, ArrayRef<Value *> { EE, Last_Value }, "", &I);
+              Preserve->setDebugLoc(I.getDebugLoc());
+              Elements.push_back(Preserve);
             }
 
             Value *Vec = UndefValue::get(VecTy);
@@ -152,14 +153,17 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
             I.replaceUsesOfWith(CopySource, Vec);
           }
           else {
-            Instruction *Copy = CallInst::Create(CopyF, ArrayRef<Value *> { CopySource }, "copy", &I);
-            Copy->setDebugLoc(I.getDebugLoc());
-            I.replaceUsesOfWith(CopySource, Copy);
+            IRBuilder<> B(&I);
+            Instruction *Last_Value = B.CreateLoad(PrevValuePtr);
+            Instruction *Preserve = CallInst::Create(PreserveF, ArrayRef<Value *> { CopySource, Last_Value }, "", &I);
+            Preserve->setDebugLoc(I.getDebugLoc());
+            I.replaceUsesOfWith(CopySource, Preserve);
           }
         }
         else {
           if (!NoopF)
             NoopF = GetOrCreateNoopF(M);
+
           CallInst *Noop = CallInst::Create(NoopF, {}, &I);
           Noop->setDebugLoc(I.getDebugLoc());
         }
@@ -208,6 +212,7 @@ public:
   return new llvm::LoadInst(NothingGV, nullptr, InsertBefore);
 }
 
+  bool LowerPreserves(Module &M);
   bool runOnModule(Module &M) override;
   const char *getPassName() const override { return "Dxil Finalize Noops"; }
 };
@@ -215,52 +220,113 @@ public:
 char DxilFinalizeNoops::ID;
 }
 
-// Replace all @dx.noop's with @llvm.donothing
-bool DxilFinalizeNoops::runOnModule(Module &M) {
-  Function *NoopF = nullptr;
-  SmallVector<Function *, 4> CopyFunctions;
+bool DxilFinalizeNoops::LowerPreserves(Module &M) {
+  SmallVector<Function *, 4> PreserveFunctions;
 
   for (Function &F : M) {
     if (!F.isDeclaration())
       continue;
-    if (F.getName() == ::kNoopName) {
-      NoopF = &F;
-    }
-    else if (F.getName().startswith(kCopyPrefix)) {
-      CopyFunctions.push_back(&F);
+    if (F.getName().startswith(kPreservePrefix)) {
+      PreserveFunctions.push_back(&F);
     }
   }
 
   bool Changed = false;
 
-  for (Function *CopyF : CopyFunctions) {
-    for (User *U : CopyF->users()) {
-      CallInst *Copy = cast<CallInst>(U);
+  struct Function_Context {
+    Function *F;
+    LoadInst *Load;
+    std::map<Type *, Value *> Values;
+  };
 
-      Instruction *Nop = GetFinalNoopInst(M, Copy);
-      Nop->setDebugLoc(Copy->getDebugLoc());
+  std::map<Function *, Function_Context> Contexts;
+  auto GetValue = [&](Function *F, Type *Ty) -> Value* {
+    Function_Context &ctx = Contexts[F];
+    if (!ctx.F) {
+      ctx.F = F;
+      BasicBlock *BB = &F->getEntryBlock();
+      IRBuilder<> B(&BB->front());
 
-      IRBuilder<> B(Nop->getNextNode());
-
-      Value *Src = Copy->getOperand(0);
-      Type *Ty = Copy->getType();
-      if (Ty->isIntegerTy()) {
-        Value *NopV = B.CreateTruncOrBitCast(Nop, Copy->getType());
-        Src = B.CreateOr(NopV, Src);
+      GlobalVariable *GV = M.getGlobalVariable(kPreserveName);
+      if (!GV) {
+        Type *i32Ty = B.getInt32Ty();
+        GV = new GlobalVariable(M,
+          i32Ty, true,
+          llvm::GlobalValue::InternalLinkage,
+          llvm::ConstantInt::get(i32Ty, 0), kPreserveName);
       }
-      else if (Ty->isFloatingPointTy()) {
-        Value *NopV = B.CreateSIToFP(Nop, Copy->getType());
-        Src = B.CreateFAdd(Src, NopV);
-      }
 
-      Copy->replaceAllUsesWith(Src);
-      Copy->eraseFromParent();
+      ctx.Load = B.CreateLoad(GV);
     }
 
-    assert(CopyF->use_empty() && "dx.copy calls must be all removed now");
-    CopyF->eraseFromParent();
+    Value *&V = ctx.Values[Ty];
+    if (!V) {
+      IRBuilder<> B(ctx.Load->getNextNode());
+      if (Ty->isIntegerTy()) {
+        V = B.CreateTruncOrBitCast(ctx.Load, Ty);
+      }
+      else if (Ty->isFloatingPointTy()) {
+        V = B.CreateSIToFP(ctx.Load, Ty);
+      }
+    }
+
+    return V;
+  };
+
+  for (Function *PreserveF : PreserveFunctions) {
+    for (User *U : PreserveF->users()) {
+      CallInst *Preserve = cast<CallInst>(U);
+      Function *F = Preserve->getParent()->getParent();
+
+      IRBuilder<> B(Preserve->getNextNode());
+
+      Value *Src = Preserve->getOperand(0);
+      Type *Ty = Preserve->getType();
+
+      if (Value *NopV = GetValue(F, Ty)) {
+        Value *NewSrc = nullptr;
+        if (Ty->isIntegerTy()) {
+          NewSrc = B.CreateOr(NopV, Src);
+        }
+        else if (Ty->isFloatingPointTy()) {
+          NewSrc = B.CreateFAdd(Src, NopV);
+        }
+
+        if (NewSrc) {
+          if (Instruction *SrcI = dyn_cast<Instruction>(NewSrc)) {
+            SrcI->setDebugLoc(Preserve->getDebugLoc());
+          }
+          Src = NewSrc;
+        }
+      }
+
+      Preserve->replaceAllUsesWith(Src);
+      Preserve->eraseFromParent();
+    }
+
+    assert(PreserveF->use_empty() && "dx.preserve calls must be all removed now");
+    PreserveF->eraseFromParent();
 
     Changed = true;
+  }
+
+  return Changed;
+}
+
+// Replace all @dx.noop's with @llvm.donothing
+bool DxilFinalizeNoops::runOnModule(Module &M) {
+
+  bool Changed = false;
+
+  Changed |= LowerPreserves(M);
+
+  Function *NoopF = nullptr;
+  for (Function &F : M) {
+    if (!F.isDeclaration())
+      continue;
+    if (F.getName() == kNoopName) {
+      NoopF = &F;
+    }
   }
 
   if (NoopF) {

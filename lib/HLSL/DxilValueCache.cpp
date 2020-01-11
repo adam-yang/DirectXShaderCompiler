@@ -225,7 +225,7 @@ Value *DxilValueCache::SimplifyAndCacheResult(Instruction *I, DominatorTree *DT)
         Cast->getType(), DL);
   }
   else if (CallInst *CI = dyn_cast<CallInst>(I)) {
-    if (hlsl::IsDxilCopy(CI))
+    if (hlsl::IsDxilPreserve(CI))
       Simplified = OptionallyGetValue(CI->getArgOperand(0));
   }
 
