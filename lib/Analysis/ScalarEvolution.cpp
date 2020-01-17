@@ -88,6 +88,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "dxc/HLSL/DxilNoops.h"
 #include <algorithm>
 using namespace llvm;
 
@@ -4100,6 +4101,12 @@ ScalarEvolution::getRange(const SCEV *S,
 const SCEV *ScalarEvolution::createSCEV(Value *V) {
   if (!isSCEVable(V->getType()))
     return getUnknown(V);
+
+// HLSL change begin
+  if (CallInst *CI = dyn_cast<CallInst>(V))
+    if (hlsl::IsDxilPreserve(CI))
+      return createSCEV(CI->getArgOperand(0));
+// HLSL change end
 
   unsigned Opcode = Instruction::UserOp1;
   if (Instruction *I = dyn_cast<Instruction>(V)) {
