@@ -4102,11 +4102,11 @@ const SCEV *ScalarEvolution::createSCEV(Value *V) {
   if (!isSCEVable(V->getType()))
     return getUnknown(V);
 
-// HLSL change begin
+// HLSL Change - Begin
   if (CallInst *CI = dyn_cast<CallInst>(V))
     if (hlsl::IsDxilPreserve(CI))
       return createSCEV(CI->getArgOperand(0));
-// HLSL change end
+// HLSL Change End
 
   unsigned Opcode = Instruction::UserOp1;
   if (Instruction *I = dyn_cast<Instruction>(V)) {
@@ -5336,9 +5336,16 @@ static bool CanConstantFold(const Instruction *I) {
       isa<LoadInst>(I))
     return true;
 
+  // HLSL Change - Begin
+  if (const CallInst *CI = dyn_cast<CallInst>(I))
+    if (hlsl::IsDxilPreserve(CI))
+      return true;
+  // HLSL Change - End
+
   if (const CallInst *CI = dyn_cast<CallInst>(I))
     if (const Function *F = CI->getCalledFunction())
       return canConstantFoldCallTo(F);
+
   return false;
 }
 
@@ -5462,6 +5469,13 @@ static Constant *EvaluateExpression(Value *V, const Loop *L,
     if (!LI->isVolatile())
       return ConstantFoldLoadFromConstPtr(Operands[0], DL);
   }
+
+  // HLSL Change - Begin
+  if (CallInst *CI = dyn_cast<CallInst>(I))
+    if (hlsl::IsDxilPreserve(CI))
+      return Operands[0];
+  // HLSL Change - End
+
   return ConstantFoldInstOperands(I->getOpcode(), I->getType(), Operands, DL,
                                   TLI);
 }

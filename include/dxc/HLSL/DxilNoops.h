@@ -12,7 +12,7 @@ namespace llvm {
 }
 
 namespace hlsl {
-  bool IsDxilPreserve(llvm::CallInst *CI);
+  bool IsDxilPreserve(const llvm::CallInst *CI);
 }
 
 
