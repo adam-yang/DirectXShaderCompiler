@@ -80,6 +80,7 @@
 
 #include "dxc/DXIL/DxilUtil.h"
 #include "dxc/HLSL/HLModule.h"
+#include "dxc/HLSL/DxilValueCache.h"
 
 using namespace llvm;
 using namespace hlsl;
@@ -123,11 +124,21 @@ public:
   bool runOnLoop(Loop *L, LPPassManager &LPM) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<LoopInfoWrapperPass>();
+    AU.addPreserved<LoopInfoWrapperPass>();
+
     AU.addRequired<AssumptionCacheTracker>();
+
+    AU.addRequiredID(LoopSimplifyID);
+    AU.addPreservedID(LoopSimplifyID);
+
+    AU.addRequired<ScalarEvolution>();
+    AU.addPreserved<ScalarEvolution>();
+
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addPreserved<DominatorTreeWrapperPass>();
-    AU.addRequired<ScalarEvolution>();
-    AU.addRequiredID(LoopSimplifyID);
+
+    AU.addRequired<DxilValueCache>();
+    AU.addPreserved<DxilValueCache>();
   }
 };
 
@@ -536,7 +547,7 @@ inline static int64_t GetGEPIndex(GEPOperator *GEP, unsigned idx) {
 // Otherwise it emits an error and fails compilation.
 //
 template<typename IteratorT>
-static bool BreakUpArrayAllocas(bool AllowOOBIndex, IteratorT ItBegin, IteratorT ItEnd, DominatorTree *DT, AssumptionCache *AC) { 
+static bool BreakUpArrayAllocas(DxilValueCache *DVC, bool AllowOOBIndex, IteratorT ItBegin, IteratorT ItEnd, DominatorTree *DT, AssumptionCache *AC) { 
   bool Success = true;
 
   SmallVector<AllocaInst *, 8> WorkList(ItBegin, ItEnd);
@@ -559,6 +570,20 @@ static bool BreakUpArrayAllocas(bool AllowOOBIndex, IteratorT ItBegin, IteratorT
     GEPs.clear(); // Re-use array
     for (User *U : AI->users()) {
       if (GEPOperator *GEP = dyn_cast<GEPOperator>(U)) {
+
+        if (DVC) {
+          for (unsigned i = 0; i < GEP->getNumIndices(); i++) {
+            Value *IndexOp = GEP->getOperand(i + 1);
+            if (isa<Constant>(IndexOp))
+              continue;
+
+            if (Value *V = DVC->GetValue(IndexOp)) {
+              if (Constant *C = dyn_cast<Constant>(V))
+                GEP->setOperand(i + 1, C);
+            }
+          }
+        }
+
         if (!GEP->hasAllConstantIndices() || GEP->getNumIndices() < 2 ||
           GetGEPIndex(GEP, 0) != 0)
         {
@@ -689,6 +714,8 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
   DebugLoc LoopLoc = L->getStartLoc(); // Debug location for the start of the loop.
   Function *F = L->getHeader()->getParent();
   ScalarEvolution *SE = &getAnalysis<ScalarEvolution>();
+  DxilValueCache *DVC = nullptr;
+  DVC = &getAnalysis<DxilValueCache>();
 
   bool HasExplicitLoopCount = false;
   int ExplicitUnrollCountSigned = 0;
@@ -966,7 +993,11 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
     // Check exit condition to see if we fully unrolled the loop
     if (BranchInst *BI = dyn_cast<BranchInst>(CurIteration.Latch->getTerminator())) {
       bool Cond = false;
-      if (GetConstantI1(BI->getCondition(), &Cond)) {
+      Value *ConstantCond = BI->getCondition();
+      if (Value *C = DVC->GetValue(ConstantCond))
+        ConstantCond = C;
+
+      if (GetConstantI1(ConstantCond, &Cond)) {
         if (BI->getSuccessor(Cond ? 1 : 0) == CurIteration.Header) {
           Succeeded = true;
           break;
@@ -1072,9 +1103,10 @@ bool DxilLoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
       simplifyLoop(OuterL, DT, LI, this, nullptr, nullptr, AC);
     }
 
+
     // Now that we potentially turned some GEP indices into constants,
     // try to clean up their allocas.
-    if (!BreakUpArrayAllocas(FxcCompatMode /* allow oob index */, ProblemAllocas.begin(), ProblemAllocas.end(), DT, AC)) {
+    if (!BreakUpArrayAllocas(DVC, FxcCompatMode /* allow oob index */, ProblemAllocas.begin(), ProblemAllocas.end(), DT, AC)) {
       FailLoopUnroll(false, F->getContext(), LoopLoc, "Could not unroll loop due to out of bound array access.");
     }
 
@@ -1246,4 +1278,12 @@ Pass *llvm::createDxilLoopUnrollPass(unsigned MaxIterationAttempt) {
 }
 
 INITIALIZE_PASS(DxilConditionalMem2Reg, "dxil-cond-mem2reg", "Dxil Conditional Mem2Reg", false, false)
-INITIALIZE_PASS(DxilLoopUnroll, "dxil-loop-unroll", "Dxil Unroll loops", false, false)
+
+INITIALIZE_PASS_BEGIN(DxilLoopUnroll, "dxil-loop-unroll", "Dxil Unroll loops", false, false)
+INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(DxilValueCache)
+INITIALIZE_PASS_END(DxilLoopUnroll, "dxil-loop-unroll", "Dxil Unroll loops", false, false) 

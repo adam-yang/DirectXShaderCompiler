@@ -317,7 +317,7 @@ Value *DxilValueCache::OptionallyGetValue(Value *V) {
   return V;
 }
 
-DxilValueCache::DxilValueCache() : ModulePass(ID) {
+DxilValueCache::DxilValueCache() : ImmutablePass(ID) {
   initializeDxilValueCachePass(*PassRegistry::getPassRegistry());
 }
 
@@ -344,6 +344,10 @@ bool DxilValueCache::IsNeverReachable(BasicBlock *BB, DominatorTree *DT) {
 LLVM_DUMP_METHOD
 void DxilValueCache::dump() const {
   ValueMap.dump();
+}
+
+void DxilValueCache::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.setPreservesAll();
 }
 
 Value *DxilValueCache::ProcessValue(Value *NewV, DominatorTree *DT) {
@@ -449,7 +453,7 @@ Value *DxilValueCache::ProcessValue(Value *NewV, DominatorTree *DT) {
 
 char DxilValueCache::ID;
 
-ModulePass *llvm::createDxilValueCachePass() {
+Pass *llvm::createDxilValueCachePass() {
   return new DxilValueCache();
 }
 

@@ -29,10 +29,17 @@ StringRef kNothingName = "dx.nothing";
 StringRef kPreserveName = "dx.preserve.value";
 }
 
-bool hlsl::IsDxilPreserve(const CallInst *CI) {
-  if (Function *F = CI->getCalledFunction())
-    return F->getName().startswith(kPreservePrefix);
+bool hlsl::IsDxilPreserve(const Value *V) {
+  if (const CallInst *CI = dyn_cast<CallInst>(V))
+    if (Function *F = CI->getCalledFunction())
+      return F->getName().startswith(kPreservePrefix);
   return false;
+}
+
+Value *hlsl::GetDxilPreserveSrc(Value *V) {
+  assert(IsDxilPreserve(V));
+  CallInst *CI = cast<CallInst>(V);
+  return CI->getArgOperand(0);
 }
 
 //==========================================================

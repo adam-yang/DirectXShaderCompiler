@@ -8,11 +8,12 @@
 //===----------------------------------------------------------------------===//
 
 namespace llvm {
-  class CallInst;
+  class Value;
 }
 
 namespace hlsl {
-  bool IsDxilPreserve(const llvm::CallInst *CI);
+  bool IsDxilPreserve(const llvm::Value *V);
+  llvm::Value *GetDxilPreserveSrc(llvm::Value *V);
 }
 
 
