@@ -10,6 +10,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "dxc/HLSL/DxilGenerationPass.h"
+#include "dxc/HLSL/DxilValueCache.h"
 #include "dxc/DXIL/DxilModule.h"
 #include "dxc/DXIL/DxilOperations.h"
 
@@ -44,6 +45,11 @@ public:
 
   const char *getPassName() const override {
     return "DXIL legalize sample offset";
+  }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<DxilValueCache>();
+    AU.addPreserved<DxilValueCache>();
   }
 
   bool runOnFunction(Function &F) override {
@@ -202,8 +208,15 @@ void DxilLegalizeSampleOffsetPass::CollectIllegalOffsets(
 
 void DxilLegalizeSampleOffsetPass::LegalizeOffsets(
     const std::vector<Instruction *> &illegalOffsets) {
-  for (Instruction *I : illegalOffsets)
-    llvm::recursivelySimplifyInstruction(I);
+
+  DxilValueCache *DVC = &getAnalysis<DxilValueCache>();
+
+  for (Instruction *I : illegalOffsets) {
+    if (Value *V = DVC->GetValue(I)) {
+      I->replaceAllUsesWith(V);
+    }
+    //llvm::recursivelySimplifyInstruction(I);
+  }
 }
 
 FunctionPass *llvm::createDxilLegalizeSampleOffsetPass() {

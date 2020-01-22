@@ -101,14 +101,9 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
       // insert a nop there.
       else if (StoreInst *Store = dyn_cast<StoreInst>(&I)) {
         Value *V = Store->getValueOperand();
-        if (isa<Constant>(V)) {
-          InsertNop = true;
-        }
-        else {
-          InsertNop = true;
-          CopySource = V;
-          PrevValuePtr = Store->getPointerOperand();
-        }
+        InsertNop = true;
+        CopySource = V;
+        PrevValuePtr = Store->getPointerOperand();
       }
       // If we have a return, just to be safe.
       else if (ReturnInst *Ret = dyn_cast<ReturnInst>(&I)) {
