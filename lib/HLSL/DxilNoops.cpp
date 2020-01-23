@@ -19,6 +19,7 @@
 #include "llvm/Support/raw_os_ostream.h"
 
 #include "dxc/HLSL/DxilNoops.h"
+#include <unordered_map>
 
 using namespace llvm;
 
@@ -40,6 +41,72 @@ Value *hlsl::GetDxilPreserveSrc(Value *V) {
   assert(IsDxilPreserve(V));
   CallInst *CI = cast<CallInst>(V);
   return CI->getArgOperand(0);
+}
+
+static Function *GetOrCreatePreserveF(Module *M, Type *Ty) {
+  std::string str = kPreservePrefix;
+  raw_string_ostream os(str);
+  Ty->print(os);
+  os.flush();
+
+  FunctionType *FT = FunctionType::get(Ty, { Ty, Ty }, false);
+  Function *PreserveF = cast<Function>(M->getOrInsertFunction(str, FT));
+  PreserveF->addFnAttr(Attribute::AttrKind::ReadNone);
+  PreserveF->addFnAttr(Attribute::AttrKind::NoUnwind);
+  return PreserveF;
+}
+
+bool hlsl::ScalarizeDxilPreserves(llvm::Module *M) {
+
+  SmallVector<Function *, 4> Functions;
+  for (Function &F : *M) {
+    if (F.isDeclaration() && F.getName().startswith(kPreservePrefix) &&
+      F.getReturnType()->isVectorTy())
+    {
+      Functions.push_back(&F);
+    }
+  }
+
+  std::unordered_map<Type *, Function *> PreserveFunctions;
+
+  for (Function *F : Functions) {
+    for (auto it = F->user_begin(); it != F->user_end();) {
+      auto *U = *(it++);
+      CallInst *CI = cast<CallInst>(U);
+
+      Value *Src = CI->getArgOperand(0);
+      Value *Secondary = CI->getArgOperand(1);
+      VectorType *VTy = cast<VectorType>(Src->getType());
+      Type *ElemTy = VTy->getScalarType();
+
+      Function *PreserveF = PreserveFunctions[ElemTy];
+      if (!PreserveF) {
+        PreserveF = GetOrCreatePreserveF(F->getParent(), ElemTy);
+        PreserveFunctions[ElemTy] = PreserveF;
+      }
+
+      Value *NewVectorValue = UndefValue::get(VTy);
+
+      IRBuilder<> B(CI);
+      for (unsigned i = 0; i < VTy->getVectorNumElements(); i++) {
+        Value *Src_i = B.CreateExtractElement(Src, i);
+        Value *Secondary_i = B.CreateExtractElement(Secondary, i);
+
+        SmallVector<Value *, 2> Args;
+        Args.push_back(Src_i);
+        Args.push_back(Secondary_i);
+
+        auto *NewPreserve = B.CreateCall(PreserveF, Args);
+        NewVectorValue = B.CreateInsertElement(NewVectorValue, NewPreserve, i);
+      }
+
+      CI->replaceAllUsesWith(NewVectorValue);
+      CI->eraseFromParent();
+    }
+    F->eraseFromParent();
+  }
+
+  return true;
 }
 
 //==========================================================
@@ -116,23 +183,16 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
           !CopySource->getType()->isAggregateType() &&
           !CopySource->getType()->isPointerTy())
         {
-          Type *Ty = CopySource->getType()->getScalarType();
+          //Type *Ty = CopySource->getType()->getScalarType();
+          Type *Ty = CopySource->getType();
 
           Function *PreserveF = PreserveFunctions[Ty];
           if (!PreserveF) {
-            std::string str = kPreservePrefix;
-            raw_string_ostream os(str);
-            Ty->print(os);
-            os.flush();
-
-            FunctionType *FT = FunctionType::get(Ty, { Ty, Ty }, false);
-            PreserveF = cast<Function>(M.getOrInsertFunction(str, FT));
-            PreserveF->addFnAttr(Attribute::AttrKind::ReadNone);
-            PreserveF->addFnAttr(Attribute::AttrKind::NoUnwind);
+            PreserveF = GetOrCreatePreserveF(&M, Ty);
             PreserveFunctions[Ty] = PreserveF;
           }
 
-          if (CopySource->getType()->isVectorTy()) {
+          if (false && CopySource->getType()->isVectorTy()) {
             Type *VecTy = CopySource->getType();
 
             SmallVector<Value *, 4> Elements;
@@ -276,7 +336,8 @@ bool DxilFinalizeNoops::LowerPreserves(Module &M) {
   };
 
   for (Function *PreserveF : PreserveFunctions) {
-    for (User *U : PreserveF->users()) {
+    for (auto UserIt = PreserveF->user_begin(); UserIt != PreserveF->user_end();) {
+      User *U = *(UserIt++);
       CallInst *Preserve = cast<CallInst>(U);
       Function *F = Preserve->getParent()->getParent();
 

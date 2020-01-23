@@ -849,6 +849,8 @@ Value *FindScalarSource(Value *src, unsigned vecIdx = 0) {
           vecIdx -= numElt;
           src = SV->getOperand(1);
         }
+      } else if (hlsl::IsDxilPreserve(src)) {
+        src = hlsl::GetDxilPreserveSrc(src);
       } else {
         return UndefValue::get(srcTy);  // Didn't find it.
       }

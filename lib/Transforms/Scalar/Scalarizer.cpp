@@ -24,6 +24,8 @@
 #include "llvm/IR/DebugInfo.h" // HLSL Change -debug info in scalarizer.
 #include "llvm/IR/DIBuilder.h" // HLSL Change -debug info in scalarizer.
 
+#include "dxc/HLSL/DxilNoops.h"
+
 using namespace llvm;
 
 #define DEBUG_TYPE "scalarizer"
@@ -289,7 +291,10 @@ bool Scalarizer::doInitialization(Module &M) {
   return false;
 }
 
+
 bool Scalarizer::runOnFunction(Function &F) {
+  hlsl::ScalarizeDxilPreserves(F.getParent());
+
   for (Function::iterator BBI = F.begin(), BBE = F.end(); BBI != BBE; ++BBI) {
     BasicBlock *BB = BBI;
     for (BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE;) {

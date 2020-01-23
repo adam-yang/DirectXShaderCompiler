@@ -9,11 +9,13 @@
 
 namespace llvm {
   class Value;
+  class Module;
 }
 
 namespace hlsl {
   bool IsDxilPreserve(const llvm::Value *V);
   llvm::Value *GetDxilPreserveSrc(llvm::Value *V);
+  bool ScalarizeDxilPreserves(llvm::Module *M);
 }
 
 
