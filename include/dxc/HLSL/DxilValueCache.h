@@ -63,8 +63,6 @@ public:
   DxilValueCache();
   void getAnalysisUsage(AnalysisUsage &) const;
 
-  //bool runOnModule(Module &M) override { return false; } // Doesn't do anything by itself.
-  //bool runOnFunction(Function &F) override { return false; } // Doesn't do anything by itself.
   void dump() const;
   Value *GetValue(Value *V, DominatorTree *DT=nullptr);
   bool IsAlwaysReachable(BasicBlock *BB, DominatorTree *DT=nullptr);
