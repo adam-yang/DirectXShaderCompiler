@@ -165,13 +165,10 @@ float4 main( float4 unused : SV_POSITION, float4 color : COLOR ) : SV_Target
     // }
 
     return max(ret6, color);
-    // CHECK: %[[max1:.+]] = call float @dx.op.binary.f32(i32 35
-    // CHECK: %[[max2:.+]] = call float @dx.op.binary.f32(i32 35
-    // CHECK: %[[max3:.+]] = call float @dx.op.binary.f32(i32 35
-    // CHECK: %[[max4:.+]] = call float @dx.op.binary.f32(i32 35
-    // CHECK: fadd float %[[max1]], %[[preserve_f32]]
-    // CHECK: fadd float %[[max2]], %[[preserve_f32]]
-    // CHECK: fadd float %[[max3]], %[[preserve_f32]]
-    // CHECK: fadd float %[[max4]], %[[preserve_f32]]
+    // CHECK: call float @dx.op.binary.f32(i32 35
+    // CHECK: call float @dx.op.binary.f32(i32 35
+    // CHECK: call float @dx.op.binary.f32(i32 35
+    // CHECK: call float @dx.op.binary.f32(i32 35
+
 }
 
