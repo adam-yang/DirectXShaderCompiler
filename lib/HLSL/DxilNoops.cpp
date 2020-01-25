@@ -151,7 +151,7 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
       Instruction &I = *(It++);
       Value *PrevValuePtr = nullptr;
 
-      // If we are calling a real function, insert one
+      // If we are calling a real function, insert a nop
       // at the callsite.
       if (CallInst *Call = dyn_cast<CallInst>(&I)) {
         if (Function *F = Call->getCalledFunction()) {
@@ -165,63 +165,42 @@ bool DxilInsertNoops::runOnFunction(Function &F) {
       // If we have a copy, e.g:
       //     float x = 0;
       //     float y = x;    <---- copy
-      // insert a nop there.
+      // insert a preserve there.
       else if (StoreInst *Store = dyn_cast<StoreInst>(&I)) {
         Value *V = Store->getValueOperand();
         InsertNop = true;
         CopySource = V;
         PrevValuePtr = Store->getPointerOperand();
       }
-      // If we have a return, just to be safe.
+      // If we have a return, insert a nop just to be safe.
       else if (ReturnInst *Ret = dyn_cast<ReturnInst>(&I)) {
         InsertNop = true;
       }
 
       // Do the insertion
       if (InsertNop) {
+        // If we have a copy, insert a preserve instead. Only do it for
+        // scalar and vector values for now.
         if (CopySource &&
           !CopySource->getType()->isAggregateType() &&
           !CopySource->getType()->isPointerTy())
         {
-          //Type *Ty = CopySource->getType()->getScalarType();
           Type *Ty = CopySource->getType();
 
+          // Use the cached preserve function.
           Function *PreserveF = PreserveFunctions[Ty];
           if (!PreserveF) {
             PreserveF = GetOrCreatePreserveF(&M, Ty);
             PreserveFunctions[Ty] = PreserveF;
           }
 
-          if (false && CopySource->getType()->isVectorTy()) {
-            Type *VecTy = CopySource->getType();
-
-            SmallVector<Value *, 4> Elements;
-            IRBuilder<> B(&I);
-            Instruction *Last_Value_Vec = B.CreateLoad(PrevValuePtr);
-
-            for (unsigned i = 0; i < VecTy->getVectorNumElements(); i++) {
-              auto *EE = B.CreateExtractElement(CopySource, i);
-              Value *Last_Value = B.CreateExtractElement(Last_Value_Vec, i);
-              Instruction *Preserve = CallInst::Create(PreserveF, ArrayRef<Value *> { EE, Last_Value }, "", &I);
-              Preserve->setDebugLoc(I.getDebugLoc());
-              Elements.push_back(Preserve);
-            }
-
-            Value *Vec = UndefValue::get(VecTy);
-            for (unsigned i = 0; i < Elements.size(); i++) {
-              Vec = B.CreateInsertElement(Vec, Elements[i], i);
-            }
-
-            I.replaceUsesOfWith(CopySource, Vec);
-          }
-          else {
-            IRBuilder<> B(&I);
-            Instruction *Last_Value = B.CreateLoad(PrevValuePtr);
-            Instruction *Preserve = CallInst::Create(PreserveF, ArrayRef<Value *> { CopySource, Last_Value }, "", &I);
-            Preserve->setDebugLoc(I.getDebugLoc());
-            I.replaceUsesOfWith(CopySource, Preserve);
-          }
+          IRBuilder<> B(&I);
+          Instruction *Last_Value = B.CreateLoad(PrevValuePtr);
+          Instruction *Preserve = CallInst::Create(PreserveF, ArrayRef<Value *> { CopySource, Last_Value }, "", &I);
+          Preserve->setDebugLoc(I.getDebugLoc());
+          I.replaceUsesOfWith(CopySource, Preserve);
         }
+        // Insert a noop
         else {
           if (!NoopF)
             NoopF = GetOrCreateNoopF(M);
@@ -376,7 +355,7 @@ bool DxilFinalizeNoops::LowerPreserves(Module &M) {
   return Changed;
 }
 
-// Replace all @dx.noop's with @llvm.donothing
+// Replace all @dx.noop's with load @dx.nothing.value
 bool DxilFinalizeNoops::runOnModule(Module &M) {
 
   bool Changed = false;
