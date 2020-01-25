@@ -56,59 +56,6 @@ static Function *GetOrCreatePreserveF(Module *M, Type *Ty) {
   return PreserveF;
 }
 
-bool hlsl::ScalarizeDxilPreserves(llvm::Module *M) {
-
-  SmallVector<Function *, 4> Functions;
-  for (Function &F : *M) {
-    if (F.isDeclaration() && F.getName().startswith(kPreservePrefix) &&
-      F.getReturnType()->isVectorTy())
-    {
-      Functions.push_back(&F);
-    }
-  }
-
-  std::unordered_map<Type *, Function *> PreserveFunctions;
-
-  for (Function *F : Functions) {
-    for (auto it = F->user_begin(); it != F->user_end();) {
-      auto *U = *(it++);
-      CallInst *CI = cast<CallInst>(U);
-
-      Value *Src = CI->getArgOperand(0);
-      Value *Secondary = CI->getArgOperand(1);
-      VectorType *VTy = cast<VectorType>(Src->getType());
-      Type *ElemTy = VTy->getScalarType();
-
-      Function *PreserveF = PreserveFunctions[ElemTy];
-      if (!PreserveF) {
-        PreserveF = GetOrCreatePreserveF(F->getParent(), ElemTy);
-        PreserveFunctions[ElemTy] = PreserveF;
-      }
-
-      Value *NewVectorValue = UndefValue::get(VTy);
-
-      IRBuilder<> B(CI);
-      for (unsigned i = 0; i < VTy->getVectorNumElements(); i++) {
-        Value *Src_i = B.CreateExtractElement(Src, i);
-        Value *Secondary_i = B.CreateExtractElement(Secondary, i);
-
-        SmallVector<Value *, 2> Args;
-        Args.push_back(Src_i);
-        Args.push_back(Secondary_i);
-
-        auto *NewPreserve = B.CreateCall(PreserveF, Args);
-        NewVectorValue = B.CreateInsertElement(NewVectorValue, NewPreserve, i);
-      }
-
-      CI->replaceAllUsesWith(NewVectorValue);
-      CI->eraseFromParent();
-    }
-    F->eraseFromParent();
-  }
-
-  return true;
-}
-
 //==========================================================
 // Insertion pass
 //
@@ -222,6 +169,83 @@ Pass *llvm::createDxilInsertNoopsPass() {
 
 INITIALIZE_PASS(DxilInsertNoops, "dxil-insert-noops", "Dxil Insert Noops", false, false)
 
+//==========================================================
+// Scalarize pass
+//
+
+namespace {
+
+class DxilScalarizePreserves : public ModulePass {
+public:
+  static char ID;
+  DxilScalarizePreserves() : ModulePass(ID) {
+    initializeDxilScalarizePreservesPass(*PassRegistry::getPassRegistry());
+  }
+
+  bool runOnModule(Module &M) override;
+  const char *getPassName() const override { return "Dxil Scalarize Preserves"; }
+};
+
+char DxilScalarizePreserves::ID;
+}
+
+bool DxilScalarizePreserves::runOnModule(Module &M) {
+  SmallVector<Function *, 4> Functions;
+  for (Function &F : M) {
+    if (F.isDeclaration() && F.getName().startswith(kPreservePrefix) &&
+      F.getReturnType()->isVectorTy())
+    {
+      Functions.push_back(&F);
+    }
+  }
+
+  std::unordered_map<Type *, Function *> PreserveFunctions;
+
+  for (Function *F : Functions) {
+    for (auto it = F->user_begin(); it != F->user_end();) {
+      auto *U = *(it++);
+      CallInst *CI = cast<CallInst>(U);
+
+      Value *Src = CI->getArgOperand(0);
+      Value *Secondary = CI->getArgOperand(1);
+      VectorType *VTy = cast<VectorType>(Src->getType());
+      Type *ElemTy = VTy->getScalarType();
+
+      Function *PreserveF = PreserveFunctions[ElemTy];
+      if (!PreserveF) {
+        PreserveF = GetOrCreatePreserveF(F->getParent(), ElemTy);
+        PreserveFunctions[ElemTy] = PreserveF;
+      }
+
+      Value *NewVectorValue = UndefValue::get(VTy);
+
+      IRBuilder<> B(CI);
+      for (unsigned i = 0; i < VTy->getVectorNumElements(); i++) {
+        Value *Src_i = B.CreateExtractElement(Src, i);
+        Value *Secondary_i = B.CreateExtractElement(Secondary, i);
+
+        SmallVector<Value *, 2> Args;
+        Args.push_back(Src_i);
+        Args.push_back(Secondary_i);
+
+        auto *NewPreserve = B.CreateCall(PreserveF, Args);
+        NewVectorValue = B.CreateInsertElement(NewVectorValue, NewPreserve, i);
+      }
+
+      CI->replaceAllUsesWith(NewVectorValue);
+      CI->eraseFromParent();
+    }
+    F->eraseFromParent();
+  }
+
+  return true;
+}
+
+Pass *llvm::createDxilScalarizePreservesPass() {
+  return new DxilScalarizePreserves();
+}
+
+INITIALIZE_PASS(DxilScalarizePreserves, "dxil-scalarize-preserves", "Dxil Scalarize Preserves", false, false)
 
 //==========================================================
 // Finalize pass

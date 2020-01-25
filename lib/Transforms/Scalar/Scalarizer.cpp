@@ -293,8 +293,6 @@ bool Scalarizer::doInitialization(Module &M) {
 
 
 bool Scalarizer::runOnFunction(Function &F) {
-  hlsl::ScalarizeDxilPreserves(F.getParent());
-
   for (Function::iterator BBI = F.begin(), BBE = F.end(); BBI != BBE; ++BBI) {
     BasicBlock *BB = BBI;
     for (BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE;) {
