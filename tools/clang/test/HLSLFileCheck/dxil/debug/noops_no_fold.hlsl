@@ -7,16 +7,23 @@ Texture2D tex1 : register(t1);
 
 [RootSignature("DescriptorTable(SRV(t0), SRV(t1))")]
 float4 main() : SV_Target {
+  // CHECK: %[[preserve_i32:[0-9]+]] = load i32, i32* @dx.preserve.value
+  // CHECK: %[[preserve_f32:[0-9]+]] = sitofp i32 %[[preserve_i32]]
 
   float x = 10;
-  // CHECK: load i32, i32* @dx.nothing
+  // fadd float 1.000000e+01, %[[preserve_f32]]
 
   float y = x + 5;
-  // CHECK: fadd
+  // CHECK: %[[a1:.+]] = fadd
+  // fadd float [[a1]], %[[preserve_f32]]
+
   float z = y * 2;
-  // CHECK: fmul
+  // CHECK: %[[b1:.+]] = fmul
+  // fadd float [[b1]], %[[preserve_f32]]
+
   float w = z / 0.5;
-  // CHECK: fdiv
+  // CHECK: %[[c1:.+]] = fdiv
+  // fadd float [[c1]], %[[preserve_f32]]
 
   Texture2D tex = tex0; 
   // CHECK: load i32, i32* @dx.nothing
@@ -28,10 +35,15 @@ float4 main() : SV_Target {
     // CHECK: br
   }
 
-  // CHECK: fadd
-  // CHECK: fadd
-  // CHECK: fadd
-  // CHECK: fadd
+  // CHECK: %[[d1:.+]] = fadd
+  // CHECK: %[[d2:.+]] = fadd
+  // CHECK: %[[d3:.+]] = fadd
+  // CHECK: %[[d4:.+]] = fadd
+  // fadd float [[d1]], %[[preserve_f32]]
+  // fadd float [[d2]], %[[preserve_f32]]
+  // fadd float [[d3]], %[[preserve_f32]]
+  // fadd float [[d4]], %[[preserve_f32]]
+
   return tex.Load(0) + float4(x,y,z,w);
   // CHECK: load i32, i32* @dx.nothing
 }
