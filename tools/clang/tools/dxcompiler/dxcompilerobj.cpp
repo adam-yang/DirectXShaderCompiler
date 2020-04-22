@@ -106,6 +106,8 @@ static bool ShouldPartBeIncludedInPDB(UINT32 FourCC) {
   switch (FourCC) {
   case hlsl::DFCC_ShaderDebugName:
   case hlsl::DFCC_ShaderHash:
+  case hlsl::DFCC_PDBInfo:
+  case hlsl::DFCC_PDBSources:
     return true;
   }
   return false;

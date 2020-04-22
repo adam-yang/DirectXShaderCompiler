@@ -1540,6 +1540,59 @@ public:
   }
 };
 
+struct Speculative_Writer {
+  struct Record {
+    const void *Data;
+    size_t SizeInBytes;
+  };
+
+  std::vector<Record> Writes;
+  size_t TotalSizeInBytes = 0;
+
+  inline void Add(const void *InData, size_t Size) {
+    Record R = {
+      InData, Size
+    };
+    Writes.push_back(R);
+    TotalSizeInBytes += Size;
+  }
+  template<typename T>
+  void Add(const T *Data) {
+    Add(Data, sizeof(T));
+  }
+  inline void AddZero(size_t Size) {
+    Add(nullptr, Size);
+  }
+  inline void AddPadding(size_t NumBytes) {
+    size_t Remain = TotalSizeInBytes % NumBytes;
+    if (Remain) {
+      AddZero(NumBytes - Remain);
+    }
+  }
+  inline size_t GetSize() const {
+    return TotalSizeInBytes;
+  }
+
+  inline void Write(IStream *pStream) {
+    for (unsigned i = 0; i < Writes.size(); i++) {
+      Record &R = Writes[i];
+      if (R.Data) {
+        ULONG uBytesWritten = 0;
+        IFT(pStream->Write(R.Data, R.SizeInBytes, &uBytesWritten));
+        assert(uBytesWritten == R.SizeInBytes);
+      }
+      else {
+        ULONG uBytesWritten = 0;
+        UINT8 Zero = 0;
+        for (unsigned j = 0; j < R.SizeInBytes; j++) {
+          IFT(pStream->Write(&Zero, 1, &uBytesWritten));
+          assert(uBytesWritten == 1);
+        }
+      }
+    }
+  }
+};
+
 } // namespace
 
 void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
@@ -1562,9 +1615,87 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
   if (DXIL::CompareVersions(ValMajor, ValMinor, 1, 1) < 0)
     Flags &= ~SerializeDxilFlags::IncludeDebugNamePart;
   bool bSupportsShaderHash = DXIL::CompareVersions(ValMajor, ValMinor, 1, 5) >= 0;
+  bool bSupportsPdbInfo = DXIL::CompareVersions(ValMajor, ValMinor, 1, 6) >= 0;
   bool bCompat_1_4 = DXIL::CompareVersions(ValMajor, ValMinor, 1, 5) < 0;
   bool bEmitReflection = Flags & SerializeDxilFlags::IncludeReflectionPart ||
                          pReflectionStreamOut;
+
+  struct SourceFile {
+    StringRef FileName;
+    StringRef FileContent;
+  };
+  std::vector<SourceFile> SourceFiles;
+  std::vector<StringRef> Args;
+  std::vector<StringRef> CompileFlags;
+  std::vector<StringRef> Defines;
+  StringRef EntryName;
+  StringRef Target;
+
+  if (bSupportsPdbInfo) {
+    Target = pModule->GetShaderModel()->GetName();
+    EntryName = pModule->GetEntryFunctionName();
+
+    if (NamedMDNode *SourceContentMD =
+      pModule->GetModule()->getNamedMetadata(hlsl::DxilMDHelper::kDxilSourceContentsMDName))
+    {
+      for (MDNode *Operand : SourceContentMD->operands()) {
+        Metadata *FileNameMD = Operand->getOperand(0).get();
+        Metadata *FileContentMD = Operand->getOperand(1).get();
+        SourceFiles.push_back({
+          cast<MDString>(FileNameMD)->getString(),
+          cast<MDString>(FileContentMD)->getString(),
+          });
+      }
+      // Delete the source content.
+      pModule->GetModule()->eraseNamedMetadata(SourceContentMD);
+    }
+
+    if (NamedMDNode *DefinesMD =
+      pModule->GetModule()->getNamedMetadata(hlsl::DxilMDHelper::kDxilSourceDefinesMDName))
+    {
+      for (const MDOperand &Operand : DefinesMD->getOperand(0)->operands()) {
+        Defines.push_back(cast<MDString>(Operand.get())->getString());
+      }
+    }
+
+    if (NamedMDNode *ArgsMD =
+      pModule->GetModule()->getNamedMetadata(hlsl::DxilMDHelper::kDxilSourceArgsMDName))
+    {
+      for (const MDOperand &Operand : ArgsMD->getOperand(0)->operands()) {
+        Args.push_back(cast<MDString>(Operand.get())->getString());
+      }
+    }
+
+    for (auto it = Args.begin(); it != Args.end(); it++) {
+      StringRef &Arg = *it;
+      static const char *SpecialPrefixes[] = {
+        "-D", "/D", "-E", "/E", "-T", "/T",
+      };
+
+      bool Skip = false;
+      for (unsigned i = 0; i < _countof(SpecialPrefixes); i++) {
+        const char *Prefix = SpecialPrefixes[i];
+        if (Arg.startswith(Prefix)) {
+          Skip = true;
+          if (Arg.size() == strlen(Prefix)) {
+            it++;
+          }
+          break;
+        }
+      }
+
+      if (!Skip) {
+        CompileFlags.push_back(Arg);
+      }
+    }
+  }
+
+  DxilPdbInfoEntry EntryHeader = {};
+  DxilPdbInfoEntry TargetHeader = {};
+  DxilPdbInfoEntry ArgsHeader = {};
+  DxilPdbInfoEntry FlagsHeader = {};
+  DxilPdbInfoEntry SourceTableHeader = {};
+  Speculative_Writer PDBI_Writer;
 
   DxilContainerWriter_impl writer;
 
@@ -1676,9 +1807,113 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
     uint32_t debugInUInt32, debugPaddingBytes;
     GetPaddedProgramPartSize(pInputProgramStream, debugInUInt32, debugPaddingBytes);
     if (Flags & SerializeDxilFlags::IncludeDebugInfoPart) {
+
+      // Add debug info module
       writer.AddPart(DFCC_ShaderDebugInfoDXIL, debugInUInt32 * sizeof(uint32_t) + sizeof(DxilProgramHeader), [&](AbstractMemoryStream *pStream) {
         WriteProgramPart(pModule->GetShaderModel(), pInputProgramStream, pStream);
       });
+
+      // Add PDB source content
+      if (bSupportsPdbInfo) {
+        if (SourceFiles.size()) {
+          unsigned SizeInBytes = 0;
+          for (unsigned i = 0; i < SourceFiles.size(); i++) {
+            SizeInBytes += SourceFiles[i].FileContent.size() + 1;
+          }
+
+          unsigned PaddingSizeInBytes = SizeInBytes % sizeof(UINT32) ? sizeof(UINT32) - SizeInBytes % sizeof(UINT32) : 0;
+          unsigned PaddedSizeInUint32 = SizeInBytes / sizeof(UINT32) +
+                                        (SizeInBytes % sizeof(UINT32) ? 1 : 0);
+
+          writer.AddPart(DFCC_PDBSources, PaddedSizeInUint32 * sizeof(UINT32), [&SourceFiles, PaddingSizeInBytes](AbstractMemoryStream *pStream) {
+            ULONG uBytesWritten = 0;
+            const UINT8 Zero = 0;
+
+            for (unsigned i = 0; i < SourceFiles.size(); i++) {
+
+              IFT(pStream->Write(SourceFiles[i].FileContent.data(), SourceFiles[i].FileContent.size(), &uBytesWritten));
+              assert(uBytesWritten == SourceFiles[i].FileContent.size());
+
+              IFT(pStream->Write(&Zero, 1, &uBytesWritten));
+              assert(uBytesWritten == 1);
+            }
+
+            for (unsigned i = 0; i < PaddingSizeInBytes; i++) {
+              IFT(pStream->Write(&Zero, 1, &uBytesWritten));
+              assert(uBytesWritten == 1);
+            }
+
+          });
+        }
+      }
+
+      // Add PDB extra info
+      if (bSupportsPdbInfo) {
+        if (EntryName.size()) {
+          PDBI_Writer.Add(&EntryHeader);
+
+          EntryHeader.Type = PDBI_Entry;
+          EntryHeader.SizeInBytes = EntryName.size() + 1;
+
+          PDBI_Writer.Add(EntryName.data(), EntryName.size());
+          PDBI_Writer.AddZero(1);
+        }
+
+        if (Target.size()) {
+          PDBI_Writer.Add(&TargetHeader);
+
+          TargetHeader.Type = PDBI_TargetProfile;
+          TargetHeader.SizeInBytes = EntryName.size() + 1;
+
+          PDBI_Writer.Add(EntryName.data(), EntryName.size());
+          PDBI_Writer.AddZero(1);
+        }
+
+        if (Args.size()) {
+          PDBI_Writer.Add(&ArgsHeader);
+
+          ArgsHeader.Type = PDBI_Args;
+          for (unsigned i = 0; i < Args.size(); i++) {
+            StringRef &Arg = Args[i];
+            ArgsHeader.SizeInBytes += Arg.size() + 1;
+            PDBI_Writer.Add(Arg.data(), Arg.size());
+            PDBI_Writer.AddZero(1);
+          }
+        }
+
+        if (CompileFlags.size()) {
+          PDBI_Writer.Add(&FlagsHeader);
+
+          FlagsHeader.Type = PDBI_Flags;
+          for (unsigned i = 0; i < CompileFlags.size(); i++) {
+            StringRef &Flag = CompileFlags[i];
+            FlagsHeader.SizeInBytes += Flag.size() + 1;
+
+            PDBI_Writer.Add(Flag.data(), Flag.size());
+            PDBI_Writer.AddZero(1);
+          }
+        }
+
+        if (SourceFiles.size()) {
+          PDBI_Writer.Add(&SourceTableHeader);
+
+          for (unsigned i = 0; i < SourceFiles.size(); i++) {
+            StringRef FileName = SourceFiles[i].FileName;
+            SourceTableHeader.SizeInBytes += FileName.size() + 1;
+
+            PDBI_Writer.Add(FileName.data(), FileName.size());
+            PDBI_Writer.AddZero(1);
+          }
+        }
+
+        PDBI_Writer.AddPadding(sizeof(UINT32));
+
+        if (unsigned SizeInBytes = PDBI_Writer.GetSize()) {
+          writer.AddPart(DFCC_PDBInfo, SizeInBytes, [&PDBI_Writer](AbstractMemoryStream *pStream) {
+            PDBI_Writer.Write(pStream);
+          });
+        }
+      }
     }
 
     llvm::StripDebugInfo(*pModule->GetModule());

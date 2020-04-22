@@ -5929,6 +5929,8 @@ HRESULT ValidateDxilContainerParts(llvm::Module *pModule,
     case DFCC_DXIL:
     case DFCC_ShaderDebugInfoDXIL:
     case DFCC_ShaderDebugName:
+    case DFCC_PDBInfo:
+    case DFCC_PDBSources:
       continue;
 
     case DFCC_ShaderHash:

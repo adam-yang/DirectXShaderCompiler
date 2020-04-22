@@ -51,6 +51,21 @@ typedef struct DxilShaderHash {
   uint8_t Digest[DxilContainerHashSize];
 } DxilShaderHash;
 
+enum DxilPdbInfoType {
+  PDBI_Args,            // Null terminator separated list of string compiler options including entry, defines, and target. Ends with double terminators.
+  PDBI_Flags,           // Null terminator separated list of string compiler options excluding entry, defines, and target. Ends with double terminators.
+  PDBI_Defines,         // Null terminator separated list of string compiler defines. Ends with double terminators.
+  PDBI_TargetProfile,   // Shader target profile, a null-terminated string.
+  PDBI_Entry,           // Shader entry, a null-terminated string.
+  PDBI_SourceTable,     // Null terminator separated list of strings containing source file names.
+  PDBI_SourceContent,   // Null terminator separated list of strings containing source file contents.
+};
+
+struct DxilPdbInfoEntry {
+  uint32_t Type;
+  uint32_t SizeInBytes;
+};
+
 struct DxilContainerVersion {
   uint16_t Major;
   uint16_t Minor;
@@ -95,6 +110,8 @@ enum DxilFourCC {
   DFCC_PipelineStateValidation  = DXIL_FOURCC('P', 'S', 'V', '0'),
   DFCC_RuntimeData              = DXIL_FOURCC('R', 'D', 'A', 'T'),
   DFCC_ShaderHash               = DXIL_FOURCC('H', 'A', 'S', 'H'),
+  DFCC_PDBInfo                  = DXIL_FOURCC('P', 'D', 'B', 'I'),
+  DFCC_PDBSources               = DXIL_FOURCC('P', 'D', 'B', 'S'),
 };
 
 #undef DXIL_FOURCC
