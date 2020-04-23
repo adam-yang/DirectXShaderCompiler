@@ -1501,7 +1501,8 @@ static void GetPaddedProgramPartSize(AbstractMemoryStream *pStream,
 
 static void WriteProgramPart(const ShaderModel *pModel,
                              AbstractMemoryStream *pModuleBitcode,
-                             AbstractMemoryStream *pStream) {
+                             AbstractMemoryStream *pStream,
+                             std::function<size_t(IStream *)> ExtraWriter=nullptr) {
   DXASSERT(pModel != nullptr, "else generation should have failed");
   DxilProgramHeader programHeader;
   uint32_t shaderVersion =
@@ -1519,9 +1520,14 @@ static void WriteProgramPart(const ShaderModel *pModel,
   IFT(WriteStreamValue(pStream, programHeader));
   IFT(pStream->Write(pModuleBitcode->GetPtr(), pModuleBitcode->GetPtrSize(),
                      &cbWritten));
+
   if (programPaddingBytes) {
     uint32_t paddingValue = 0;
     IFT(pStream->Write(&paddingValue, programPaddingBytes, &cbWritten));
+  }
+
+  if (ExtraWriter) {
+    (void)ExtraWriter(pStream);
   }
 }
 
@@ -1799,6 +1805,8 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
     WriteBitcodeToFile(pModule->GetModule(), outStream, true);
   }
 
+  std::function<size_t(IStream *)> ExtraDebugWriter;
+
   // If we have debug information present, serialize it to a debug part, then use the stripped version as the canonical program version.
   CComPtr<AbstractMemoryStream> pProgramStream = pInputProgramStream;
   bool bModuleStripped = false;
@@ -1808,12 +1816,8 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
     GetPaddedProgramPartSize(pInputProgramStream, debugInUInt32, debugPaddingBytes);
     if (Flags & SerializeDxilFlags::IncludeDebugInfoPart) {
 
-      // Add debug info module
-      writer.AddPart(DFCC_ShaderDebugInfoDXIL, debugInUInt32 * sizeof(uint32_t) + sizeof(DxilProgramHeader), [&](AbstractMemoryStream *pStream) {
-        WriteProgramPart(pModule->GetShaderModel(), pInputProgramStream, pStream);
-      });
-
       // Add PDB source content
+#if 0
       if (bSupportsPdbInfo) {
         if (SourceFiles.size()) {
           unsigned SizeInBytes = 0;
@@ -1846,74 +1850,85 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
           });
         }
       }
+#endif
 
       // Add PDB extra info
-      if (bSupportsPdbInfo) {
-        if (EntryName.size()) {
-          PDBI_Writer.Add(&EntryHeader);
+      if (EntryName.size()) {
+        PDBI_Writer.Add(&EntryHeader);
 
-          EntryHeader.Type = PDBI_Entry;
-          EntryHeader.SizeInBytes = EntryName.size() + 1;
+        EntryHeader.Type = PDBI_Entry;
+        EntryHeader.SizeInBytes = EntryName.size() + 1;
 
-          PDBI_Writer.Add(EntryName.data(), EntryName.size());
+        PDBI_Writer.Add(EntryName.data(), EntryName.size());
+        PDBI_Writer.AddZero(1);
+      }
+
+      if (Target.size()) {
+        PDBI_Writer.Add(&TargetHeader);
+
+        TargetHeader.Type = PDBI_TargetProfile;
+        TargetHeader.SizeInBytes = EntryName.size() + 1;
+
+        PDBI_Writer.Add(EntryName.data(), EntryName.size());
+        PDBI_Writer.AddZero(1);
+      }
+
+      if (Args.size()) {
+        PDBI_Writer.Add(&ArgsHeader);
+
+        ArgsHeader.Type = PDBI_Args;
+        for (unsigned i = 0; i < Args.size(); i++) {
+          StringRef &Arg = Args[i];
+          ArgsHeader.SizeInBytes += Arg.size() + 1;
+          PDBI_Writer.Add(Arg.data(), Arg.size());
           PDBI_Writer.AddZero(1);
-        }
-
-        if (Target.size()) {
-          PDBI_Writer.Add(&TargetHeader);
-
-          TargetHeader.Type = PDBI_TargetProfile;
-          TargetHeader.SizeInBytes = EntryName.size() + 1;
-
-          PDBI_Writer.Add(EntryName.data(), EntryName.size());
-          PDBI_Writer.AddZero(1);
-        }
-
-        if (Args.size()) {
-          PDBI_Writer.Add(&ArgsHeader);
-
-          ArgsHeader.Type = PDBI_Args;
-          for (unsigned i = 0; i < Args.size(); i++) {
-            StringRef &Arg = Args[i];
-            ArgsHeader.SizeInBytes += Arg.size() + 1;
-            PDBI_Writer.Add(Arg.data(), Arg.size());
-            PDBI_Writer.AddZero(1);
-          }
-        }
-
-        if (CompileFlags.size()) {
-          PDBI_Writer.Add(&FlagsHeader);
-
-          FlagsHeader.Type = PDBI_Flags;
-          for (unsigned i = 0; i < CompileFlags.size(); i++) {
-            StringRef &Flag = CompileFlags[i];
-            FlagsHeader.SizeInBytes += Flag.size() + 1;
-
-            PDBI_Writer.Add(Flag.data(), Flag.size());
-            PDBI_Writer.AddZero(1);
-          }
-        }
-
-        if (SourceFiles.size()) {
-          PDBI_Writer.Add(&SourceTableHeader);
-
-          for (unsigned i = 0; i < SourceFiles.size(); i++) {
-            StringRef FileName = SourceFiles[i].FileName;
-            SourceTableHeader.SizeInBytes += FileName.size() + 1;
-
-            PDBI_Writer.Add(FileName.data(), FileName.size());
-            PDBI_Writer.AddZero(1);
-          }
-        }
-
-        PDBI_Writer.AddPadding(sizeof(UINT32));
-
-        if (unsigned SizeInBytes = PDBI_Writer.GetSize()) {
-          writer.AddPart(DFCC_PDBInfo, SizeInBytes, [&PDBI_Writer](AbstractMemoryStream *pStream) {
-            PDBI_Writer.Write(pStream);
-          });
         }
       }
+
+      if (CompileFlags.size()) {
+        PDBI_Writer.Add(&FlagsHeader);
+
+        FlagsHeader.Type = PDBI_Flags;
+        for (unsigned i = 0; i < CompileFlags.size(); i++) {
+          StringRef &Flag = CompileFlags[i];
+          FlagsHeader.SizeInBytes += Flag.size() + 1;
+
+          PDBI_Writer.Add(Flag.data(), Flag.size());
+          PDBI_Writer.AddZero(1);
+        }
+      }
+
+      if (SourceFiles.size()) {
+        PDBI_Writer.Add(&SourceTableHeader);
+
+        for (unsigned i = 0; i < SourceFiles.size(); i++) {
+          StringRef FileName = SourceFiles[i].FileName;
+          SourceTableHeader.SizeInBytes += FileName.size() + 1;
+
+          PDBI_Writer.Add(FileName.data(), FileName.size());
+          PDBI_Writer.AddZero(1);
+        }
+      }
+
+      PDBI_Writer.AddPadding(sizeof(UINT32));
+
+      ExtraDebugWriter = [&PDBI_Writer](IStream *pStream) -> size_t {
+        PDBI_Writer.Write(pStream);
+        return PDBI_Writer.GetSize();
+      };
+
+      //PDBI_Writer.AddPadding(sizeof(UINT32));
+
+      // if (unsigned SizeInBytes = PDBI_Writer.GetSize()) {
+      //   writer.AddPart(DFCC_PDBInfo, SizeInBytes, [&PDBI_Writer](AbstractMemoryStream *pStream) {
+      //     PDBI_Writer.Write(pStream);
+      //   });
+      // }
+
+      // Add debug info module
+      writer.AddPart(DFCC_ShaderDebugInfoDXIL, debugInUInt32 * sizeof(uint32_t) + sizeof(DxilProgramHeader) + PDBI_Writer.GetSize(), [&](AbstractMemoryStream *pStream) {
+        WriteProgramPart(pModule->GetShaderModel(), pInputProgramStream, pStream, ExtraDebugWriter);
+      });
     }
 
     llvm::StripDebugInfo(*pModule->GetModule());
