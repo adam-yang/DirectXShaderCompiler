@@ -10,5 +10,3 @@ int main(int x : IN) : OUT {
   return y;
 }
 
-// Exclude quoted source file (see readme)
-// CHECK-LABEL: {{!"[^"]*\\0A[^"]*"}}

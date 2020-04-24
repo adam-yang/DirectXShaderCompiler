@@ -418,10 +418,12 @@ static PDBInfo MakePDBInfo(CompilerInstance &CI) {
     it != E;
     it++)
   {
-    result.Sources.push_back({
-      it->first->getName(),
-      it->second->getRawBuffer()->getBuffer()
-    });
+    if (it->first->isValid() && !it->second->IsSystemFile) {
+      result.Sources.push_back({
+        it->first->getName(),
+        it->second->getRawBuffer()->getBuffer()
+      });
+    }
   }
 
   result.Target = CI.getCodeGenOpts().HLSLProfile;

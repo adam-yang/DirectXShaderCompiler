@@ -215,8 +215,9 @@ namespace {
       // Error may happen in Builder->Release for HLSL
       if (CodeGenOpts.getDebugInfo() == CodeGenOptions::DebugInfoKind::FullDebugInfo) {
         // Add all file contents in a list of filename/content pairs.
-        llvm::NamedMDNode *pContents = nullptr;
         llvm::LLVMContext &LLVMCtx = M->getContext();
+#if 0 // No longer putting file content in metadata.
+        llvm::NamedMDNode *pContents = nullptr;
         auto AddFile = [&](StringRef name, StringRef content) {
           if (pContents == nullptr) {
             pContents = M->getOrInsertNamedMetadata(
@@ -251,7 +252,7 @@ namespace {
         for (auto it : filesMap) {
           AddFile(it.first, it.second);
         }
-
+#endif
         // Add Defines to Debug Info
         llvm::NamedMDNode *pDefines = M->getOrInsertNamedMetadata(
             hlsl::DxilMDHelper::kDxilSourceDefinesMDName);

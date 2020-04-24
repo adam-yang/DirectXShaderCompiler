@@ -7,7 +7,8 @@
 // CHECK: addrspace(3)
 
 // Make sure source info exist.
-// CHECK: !dx.source.contents
+// No longer putting source in the module
+// xHECK: !dx.source.contents
 // CHECK: !dx.source.defines
 // CHECK: !dx.source.mainFileName
 // CHECK: !dx.source.args
@@ -15,9 +16,6 @@
 // CHECK: DIGlobalVariable(name: "dataC"
 // CHECK: DIDerivedType(tag: DW_TAG_member, name: "d"
 // CHECK: DIDerivedType(tag: DW_TAG_member, name: "b"
-
-// Exclude quoted source file (see readme)
-// CHECK-LABEL: {{!"[^"]*\\0A[^"]*"}}
 
 // Make sure source info contents exist.
 // CHECK: !{!"DefineA=1", !"DefineB=0"}
