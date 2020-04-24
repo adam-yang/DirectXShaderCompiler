@@ -70,6 +70,7 @@ AssembleInputs::AssembleInputs(std::unique_ptr<llvm::Module> &&pM,
                 IMalloc *pMalloc,
                 hlsl::SerializeDxilFlags SerializeFlags,
                 CComPtr<hlsl::AbstractMemoryStream> &pModuleBitcode,
+                hlsl::PDBInfo *pPdbInfo,
                 bool bDebugInfo,
                 llvm::StringRef DebugName,
                 clang::DiagnosticsEngine *pDiag,
@@ -81,6 +82,7 @@ AssembleInputs::AssembleInputs(std::unique_ptr<llvm::Module> &&pM,
     pMalloc(pMalloc),
     SerializeFlags(SerializeFlags),
     pModuleBitcode(pModuleBitcode),
+    pPdbInfo(pPdbInfo),
     bDebugInfo(bDebugInfo),
     DebugName(DebugName),
     pDiag(pDiag),
@@ -110,7 +112,7 @@ void AssembleToContainer(AssembleInputs &inputs) {
   CComPtr<AbstractMemoryStream> pContainerStream;
   IFT(CreateMemoryStream(inputs.pMalloc, &pContainerStream));
   SerializeDxilContainerForModule(&inputs.pM->GetOrCreateDxilModule(),
-                                  inputs.pModuleBitcode, pContainerStream, inputs.DebugName, inputs.SerializeFlags,
+                                  inputs.pModuleBitcode, pContainerStream, inputs.pPdbInfo, inputs.DebugName, inputs.SerializeFlags,
                                   inputs.pShaderHashOut, inputs.pReflectionOut, inputs.pRootSigOut);
   inputs.pOutputContainerBlob.Release();
   IFT(pContainerStream.QueryInterface(&inputs.pOutputContainerBlob));

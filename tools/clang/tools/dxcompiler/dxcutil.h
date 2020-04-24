@@ -32,6 +32,7 @@ namespace hlsl {
 enum class SerializeDxilFlags : uint32_t;
 struct DxilShaderHash;
 class AbstractMemoryStream;
+struct PDBInfo;
 namespace options {
 class MainArgs;
 class DxcOpts;
@@ -39,18 +40,21 @@ class DxcOpts;
 } // namespace hlsl
 
 namespace dxcutil {
+
 struct AssembleInputs {
   AssembleInputs(std::unique_ptr<llvm::Module> &&pM,
                  CComPtr<IDxcBlob> &pOutputContainerBlob,
                  IMalloc *pMalloc,
                  hlsl::SerializeDxilFlags SerializeFlags,
                  CComPtr<hlsl::AbstractMemoryStream> &pModuleBitcode,
+                 hlsl::PDBInfo *pPdbInfo = nullptr,
                  bool bDebugInfo = false,
                  llvm::StringRef DebugName = llvm::StringRef(),
                  clang::DiagnosticsEngine *pDiag = nullptr,
                  hlsl::DxilShaderHash *pShaderHashOut = nullptr,
                  hlsl::AbstractMemoryStream *pReflectionOut = nullptr,
                  hlsl::AbstractMemoryStream *pRootSigOut = nullptr);
+  hlsl::PDBInfo *pPdbInfo = nullptr;
   std::unique_ptr<llvm::Module> pM;
   CComPtr<IDxcBlob> &pOutputContainerBlob;
   IMalloc *pMalloc;

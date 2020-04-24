@@ -1419,12 +1419,201 @@ public:
   }
 };
 
+class DxilPDBIWriter : public DxilPartWriter {
+  struct Entry {
+    const void *Data;
+    uint32_t Size;
+    uint32_t Zeroes;
+  };
+
+  std::vector<Entry> Writes;
+  uint32_t TotalSizeInBytes = 0;
+  std::vector<StringRef> CompileFlags;
+
+  hlsl::DxilPdbInfo EntryHeader = {};
+  hlsl::DxilPdbInfo TargetHeader = {};
+  hlsl::DxilPdbInfo ArgsHeader = {};
+  hlsl::DxilPdbInfo FlagsHeader = {};
+  hlsl::DxilPdbInfo SourceTableHeader = {};
+
+  void Add(const void *InData, uint32_t InSizeInBytes) {
+    if (!InData) {
+      if (Writes.size()) {
+        Writes.back().Zeroes += InSizeInBytes;
+      }
+    }
+    else {
+      Entry NewEntry = {};
+      NewEntry.Data = InData;
+      NewEntry.Size = InSizeInBytes;
+      Writes.push_back(NewEntry);
+    }
+    TotalSizeInBytes += InSizeInBytes;
+  }
+
+  template<typename T>
+  void Add(const T &Data) {
+    Add(&Data, sizeof(T));
+  }
+
+  void AddZero(uint32_t InSizeInBytes) {
+    Add(nullptr, InSizeInBytes);
+  }
+
+public:
+  uint32_t size() const override {
+    return TotalSizeInBytes;
+  }
+
+  void write(AbstractMemoryStream *pStream) override {
+    ULONG uBytesWritten = 0;
+    for (unsigned i = 0; i < Writes.size(); i++) {
+      Entry &E = Writes[i];
+      if (E.Data) {
+        IFT(pStream->Write(E.Data, E.Size, &uBytesWritten));
+      }
+      if (E.Zeroes) {
+        UINT8 Zero = 0;
+        for (unsigned i = 0; i < E.Zeroes; i++) {
+          IFT(pStream->Write(&Zero, 1, &uBytesWritten));
+        }
+      }
+    }
+  }
+
+  DxilPDBIWriter(const hlsl::PDBInfo &pdbInfo) {
+    if (pdbInfo.Entry.size()) {
+      Add(&EntryHeader);
+
+      EntryHeader.Type = PDBI_Entry;
+      EntryHeader.SizeInBytes = pdbInfo.Entry.size() + 1;
+
+      Add(pdbInfo.Entry.data(), pdbInfo.Entry.size());
+      AddZero(1);
+    }
+
+    if (pdbInfo.Target.size()) {
+      Add(&TargetHeader);
+
+      TargetHeader.Type = PDBI_TargetProfile;
+      TargetHeader.SizeInBytes = pdbInfo.Target.size() + 1;
+
+      Add(pdbInfo.Target.data(), pdbInfo.Target.size());
+      AddZero(1);
+    }
+
+    {
+      Add(&ArgsHeader);
+
+      ArgsHeader.Type = PDBI_Args;
+      for (unsigned i = 0; i < pdbInfo.Args.size(); i++) {
+        const StringRef &Arg = pdbInfo.Args[i];
+        ArgsHeader.SizeInBytes += Arg.size() + 1;
+        Add(Arg.data(), Arg.size());
+        AddZero(1);
+      }
+      AddZero(1);
+    }
+
+    {
+      for (auto it = pdbInfo.Args.begin(); it != pdbInfo.Args.end(); it++) {
+        const StringRef &Arg = *it;
+        static const char *SpecialPrefixes[] = {
+          "-D", "/D", "-E", "/E", "-T", "/T",
+        };
+
+        bool Skip = false;
+        for (unsigned i = 0; i < _countof(SpecialPrefixes); i++) {
+          const char *Prefix = SpecialPrefixes[i];
+          if (Arg.startswith(Prefix)) {
+            Skip = true;
+            if (Arg.size() == strlen(Prefix)) {
+              it++;
+            }
+            break;
+          }
+        }
+
+        if (!Skip) {
+          CompileFlags.push_back(Arg);
+        }
+      }
+
+      if (CompileFlags.size()) {
+        Add(&FlagsHeader);
+
+        FlagsHeader.Type = PDBI_Flags;
+        for (unsigned i = 0; i < CompileFlags.size(); i++) {
+          StringRef &Flag = CompileFlags[i];
+          FlagsHeader.SizeInBytes += Flag.size() + 1;
+
+          Add(Flag.data(), Flag.size());
+          AddZero(1);
+        }
+        AddZero(1);
+      }
+    }
+
+    {
+      Add(&SourceTableHeader);
+
+      for (unsigned i = 0; i < pdbInfo.Sources.size(); i++) {
+        StringRef FileName = pdbInfo.Sources[i].Name;
+        SourceTableHeader.SizeInBytes += FileName.size() + 1;
+
+        Add(FileName.data(), FileName.size());
+        AddZero(1);
+      }
+      AddZero(1);
+    }
+  }
+};
+
+class DxilPDBSWriter : public DxilPartWriter {
+  uint32_t TotalSizeInBytes = 0;
+  const hlsl::PDBInfo &Info;
+
+public:
+  uint32_t size() const override {
+    return TotalSizeInBytes;
+  }
+
+  void write(AbstractMemoryStream *pStream) override {
+    ULONG uBytesWritten = 0;
+    const UINT8 uZero = 0;
+    for (unsigned i = 0; i < Info.Sources.size(); i++) {
+      StringRef Content = Info.Sources[i].Content;
+      IFT(pStream->Write(Content.data(), Content.size(), &uBytesWritten));
+      IFT(pStream->Write(&uZero, 1, &uBytesWritten));
+    }
+    IFT(pStream->Write(&uZero, 1, &uBytesWritten));
+  }
+
+  DxilPDBSWriter(const hlsl::PDBInfo &pdbInfo) :
+    Info(pdbInfo)
+  {
+    for (unsigned i = 0; i < Info.Sources.size(); i++) {
+      StringRef SourceContent = Info.Sources[i].Content;
+      TotalSizeInBytes += SourceContent.size() + 1;
+    }
+    TotalSizeInBytes += 1;
+  }
+};
+
 DxilPartWriter *hlsl::NewPSVWriter(const DxilModule &M, uint32_t PSVVersion) {
   return new DxilPSVWriter(M, PSVVersion);
 }
 
 DxilPartWriter *hlsl::NewRDATWriter(const DxilModule &M, uint32_t InfoVersion) {
   return new DxilRDATWriter(M, InfoVersion);
+}
+
+DxilPartWriter *hlsl::NewPDBIWriter(const hlsl::PDBInfo &pdbInfo) {
+  return new DxilPDBIWriter(pdbInfo);
+}
+
+DxilPartWriter *hlsl::NewPDBSWriter(const hlsl::PDBInfo &pdbInfo) {
+  return new DxilPDBSWriter(pdbInfo);
 }
 
 class DxilContainerWriter_impl : public DxilContainerWriter  {
@@ -1545,6 +1734,7 @@ public:
 void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
                                            AbstractMemoryStream *pModuleBitcode,
                                            AbstractMemoryStream *pFinalStream,
+                                           PDBInfo *pPdbInfo,
                                            llvm::StringRef DebugName,
                                            SerializeDxilFlags Flags,
                                            DxilShaderHash *pShaderHashOut,
@@ -1562,6 +1752,7 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
   if (DXIL::CompareVersions(ValMajor, ValMinor, 1, 1) < 0)
     Flags &= ~SerializeDxilFlags::IncludeDebugNamePart;
   bool bSupportsShaderHash = DXIL::CompareVersions(ValMajor, ValMinor, 1, 5) >= 0;
+  bool pSupportsPdbInfo = DXIL::CompareVersions(ValMajor, ValMinor, 1, 6) >= 0;
   bool bCompat_1_4 = DXIL::CompareVersions(ValMajor, ValMinor, 1, 5) < 0;
   bool bEmitReflection = Flags & SerializeDxilFlags::IncludeReflectionPart ||
                          pReflectionStreamOut;
@@ -1614,6 +1805,8 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
                      });
     }
   }
+  std::unique_ptr<DxilPDBIWriter> pPdbiWriter = nullptr;
+  std::unique_ptr<DxilPDBSWriter> pPdbsWriter = nullptr;
   std::unique_ptr<DxilRDATWriter> pRDATWriter = nullptr;
   std::unique_ptr<DxilPSVWriter> pPSVWriter = nullptr;
   unsigned int major, minor;
@@ -1679,6 +1872,18 @@ void hlsl::SerializeDxilContainerForModule(DxilModule *pModule,
       writer.AddPart(DFCC_ShaderDebugInfoDXIL, debugInUInt32 * sizeof(uint32_t) + sizeof(DxilProgramHeader), [&](AbstractMemoryStream *pStream) {
         WriteProgramPart(pModule->GetShaderModel(), pInputProgramStream, pStream);
       });
+
+      if (pPdbInfo && pSupportsPdbInfo) {
+        pPdbiWriter = llvm::make_unique<DxilPDBIWriter>(*pPdbInfo);
+        writer.AddPart(DFCC_PDBInfo, pPdbiWriter->size(), [&pPdbiWriter](AbstractMemoryStream *pStream) {
+          pPdbiWriter->write(pStream);
+        });
+
+        pPdbsWriter = llvm::make_unique<DxilPDBSWriter>(*pPdbInfo);
+        writer.AddPart(DFCC_PDBSources, pPdbsWriter->size(), [&pPdbsWriter](AbstractMemoryStream *pStream) {
+          pPdbsWriter->write(pStream);
+        });
+      }
     }
 
     llvm::StripDebugInfo(*pModule->GetModule());

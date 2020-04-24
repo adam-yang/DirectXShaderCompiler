@@ -111,7 +111,7 @@ static bool ShouldPartBeIncludedInPDB(UINT32 FourCC) {
   return false;
 }
 
-static HRESULT CreateContainerForPDB(IMalloc *pMalloc, IDxcBlob *pOldContainer, IDxcBlob *pDebugBlob, IDxcBlob **ppNewContaner) {
+static HRESULT CreateContainerForPDB(IMalloc *pMalloc, IDxcBlob *pOldContainer, IDxcBlob *pDebugBlob, PDBInfo &pdbInfo, IDxcBlob **ppNewContaner) {
   // If the pContainer is not a valid container, give up.
   if (!hlsl::IsValidDxilContainer((hlsl::DxilContainerHeader *)pOldContainer->GetBufferPointer(), pOldContainer->GetBufferSize()))
     return E_FAIL;
@@ -120,7 +120,7 @@ static HRESULT CreateContainerForPDB(IMalloc *pMalloc, IDxcBlob *pOldContainer, 
   hlsl::DxilProgramHeader *ProgramHeader = nullptr;
 
   struct Part {
-    typedef std::function<HRESULT(IStream *)> WriteProc;
+    typedef std::function<HRESULT(hlsl::AbstractMemoryStream *)> WriteProc;
     UINT32 uFourCC = 0;
     UINT32 uSize = 0;
     WriteProc Writer;
@@ -184,7 +184,7 @@ static HRESULT CreateContainerForPDB(IMalloc *pMalloc, IDxcBlob *pOldContainer, 
     Part NewPart(
       hlsl::DFCC_ShaderDebugInfoDXIL,
       uPartSize,
-      [uPartSize, ProgramHeader, pDebugBlob, uPaddingSize](IStream *pStream) {
+      [uPartSize, ProgramHeader, pDebugBlob, uPaddingSize](hlsl::AbstractMemoryStream *pStream) {
         hlsl::DxilProgramHeader Header = *ProgramHeader;
         Header.BitcodeHeader.BitcodeSize = pDebugBlob->GetBufferSize();
         Header.BitcodeHeader.BitcodeOffset = sizeof(hlsl::DxilBitcodeHeader);
@@ -201,6 +201,26 @@ static HRESULT CreateContainerForPDB(IMalloc *pMalloc, IDxcBlob *pOldContainer, 
         return S_OK;
       }
     );
+    PartWriters.push_back(NewPart);
+  }
+
+  std::unique_ptr<hlsl::DxilPartWriter> pPdbiWriter( hlsl::NewPDBIWriter(pdbInfo) );
+  {
+    pPdbiWriter.reset( hlsl::NewPDBIWriter(pdbInfo) );
+    Part NewPart(hlsl::DFCC_PDBInfo, pPdbiWriter->size(), [&pPdbiWriter](hlsl::AbstractMemoryStream *pStream) {
+      pPdbiWriter->write(pStream);
+      return S_OK;
+    });
+    PartWriters.push_back(NewPart);
+  }
+
+  std::unique_ptr<hlsl::DxilPartWriter> pPdbsWriter( hlsl::NewPDBSWriter(pdbInfo) );
+  {
+    pPdbiWriter.reset( hlsl::NewPDBIWriter(pdbInfo) );
+    Part NewPart(hlsl::DFCC_PDBInfo, pPdbsWriter->size(), [&pPdbsWriter](hlsl::AbstractMemoryStream *pStream) {
+      pPdbsWriter->write(pStream);
+      return S_OK;
+    });
     PartWriters.push_back(NewPart);
   }
 
@@ -389,6 +409,32 @@ static void CreateDefineStrings(
     val += (pDefines[i].Value) ? utf8Value.m_psz : "1";
     defines.push_back(val);
   }
+}
+
+static PDBInfo MakePDBInfo(CompilerInstance &CI) {
+  PDBInfo result;
+  SourceManager &srcMgr = CI.getSourceManager();
+  for (auto it = srcMgr.fileinfo_begin(), E = srcMgr.fileinfo_end();
+    it != E;
+    it++)
+  {
+    result.Sources.push_back({
+      it->first->getName(),
+      it->second->getRawBuffer()->getBuffer()
+    });
+  }
+
+  result.Target = CI.getCodeGenOpts().HLSLProfile;
+  result.Entry = CI.getCodeGenOpts().HLSLEntryFunction;
+
+  for (StringRef Arg : CI.getCodeGenOpts().HLSLArguments) {
+    result.Args.push_back(Arg);
+  }
+  for (StringRef Define : CI.getCodeGenOpts().HLSLDefines) {
+    result.Defines.push_back(Define);
+  }
+
+  return result;
 }
 
 class DxcCompiler : public IDxcCompiler3,
@@ -807,9 +853,14 @@ public:
           IFT(CreateMemoryStream(DxcGetThreadMallocNoRef(), &pReflectionStream));
           IFT(CreateMemoryStream(DxcGetThreadMallocNoRef(), &pRootSigStream));
 
+          PDBInfo pdbInfo;
+          if (SerializeFlags & SerializeDxilFlags::IncludeDebugInfoPart) {
+            pdbInfo = MakePDBInfo(compiler);
+          }
+
           dxcutil::AssembleInputs inputs(
                 action.takeModule(), pOutputBlob, m_pMalloc, SerializeFlags,
-                pOutputStream, opts.IsDebugInfoEnabled(),
+                pOutputStream, &pdbInfo, opts.IsDebugInfoEnabled(),
                 opts.GetPDBName(), &compiler.getDiagnostics(),
                 &ShaderHashContent, pReflectionStream, pRootSigStream);
           if (needsValidation) {
@@ -885,10 +936,12 @@ public:
       // SPIRV change ends
 
       if (!hasErrorOccurred && writePDB) {
+        PDBInfo pdbInfo = MakePDBInfo(compiler);
+
         CComPtr<IDxcBlob> pDebugBlob;
         IFT(pOutputStream.QueryInterface(&pDebugBlob));
         CComPtr<IDxcBlob> pStrippedContainer;
-        IFT(CreateContainerForPDB(m_pMalloc, pOutputBlob, pDebugBlob, &pStrippedContainer));
+        IFT(CreateContainerForPDB(m_pMalloc, pOutputBlob, pDebugBlob, pdbInfo, &pStrippedContainer));
         pDebugBlob.Release();
         IFT(hlsl::pdb::WriteDxilPDB(m_pMalloc, pStrippedContainer, ShaderHashContent.Digest, &pDebugBlob));
         IFT(pResult->SetOutputObject(DXC_OUT_PDB, pDebugBlob));

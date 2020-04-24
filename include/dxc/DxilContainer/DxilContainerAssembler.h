@@ -12,6 +12,7 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 #include "dxc/DxilContainer/DxilContainer.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -23,6 +24,18 @@ class RootSignatureHandle;
 namespace DXIL {
 enum class SignatureKind;
 }
+
+struct PDBInfo {
+  struct SourceFile {
+    llvm::StringRef Name;
+    llvm::StringRef Content;
+  };
+  std::vector<SourceFile> Sources;
+  std::vector<llvm::StringRef> Defines;
+  std::vector<llvm::StringRef> Args;
+  llvm::StringRef Entry;
+  llvm::StringRef Target;
+};
 
 class DxilPartWriter {
 public:
@@ -43,12 +56,15 @@ DxilPartWriter *NewRootSignatureWriter(const RootSignatureHandle &S);
 DxilPartWriter *NewFeatureInfoWriter(const DxilModule &M);
 DxilPartWriter *NewPSVWriter(const DxilModule &M, uint32_t PSVVersion = 0);
 DxilPartWriter *NewRDATWriter(const DxilModule &M, uint32_t InfoVersion = 0);
+DxilPartWriter *NewPDBIWriter(const hlsl::PDBInfo &pdbInfo);
+DxilPartWriter *NewPDBSWriter(const hlsl::PDBInfo &pdbInfo);
 
 DxilContainerWriter *NewDxilContainerWriter();
 
 void SerializeDxilContainerForModule(hlsl::DxilModule *pModule,
                                      AbstractMemoryStream *pModuleBitcode,
                                      AbstractMemoryStream *pStream,
+                                     PDBInfo *pPdbInfo,
                                      llvm::StringRef DebugName,
                                      SerializeDxilFlags Flags,
                                      DxilShaderHash *pShaderHashOut = nullptr,
