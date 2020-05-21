@@ -2017,6 +2017,8 @@ class db_dxil(object):
         add_pass('dxil-finalize-preserves', 'DxilFinalizePreserves', 'Dxil Finalize Preserves', [])
         add_pass('dxil-insert-preserves', 'DxilInsertPreserves', 'Dxil Insert Noops', [])
         add_pass('dxil-preserve-to-select', 'DxilPreserveToSelect', 'Dxil Insert Noops', [])
+        add_pass('dxil-annotate-functions', 'DxilAnnotateFunction', 'Dxil Annotate Functions', [])
+        add_pass('dxil-finalize-function-annotations', 'DxilFinalizeFunctionAnnotations', 'Dxil Finalize Function Annotations', [])
         add_pass('dxil-value-cache', 'DxilValueCache', 'Dxil Value Cache',[])
         add_pass('hlsl-cleanup-dxbreak', 'CleanupDxBreak', 'HLSL Remove unnecessary dx.break conditions', [])
 
