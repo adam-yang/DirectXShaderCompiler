@@ -212,12 +212,31 @@ namespace {
       }
       if (Builder)
         Builder->Release();
+
+      // Add resource binding overrides to the metadata.
+      llvm::LLVMContext &LLVMCtx = M->getContext();
+      for (const std::pair<std::string, CodeGenOptions::HLSLResourceInfo> &binding : CodeGenOpts.HLSLResourceBinding) {
+        auto bindings = M->getOrInsertNamedMetadata(
+          hlsl::DxilMDHelper::kDxilResourceBindingMDName);
+        auto GetInt32MD = [&LLVMCtx](uint32_t val) -> llvm::ValueAsMetadata* {
+          return llvm::ValueAsMetadata::get(llvm::ConstantInt::get(llvm::Type::getInt32Ty(LLVMCtx), val));
+        };
+        llvm::MDTuple *entry = llvm::MDNode::get(
+          LLVMCtx,
+          {
+            llvm::MDString::get(LLVMCtx, binding.first),
+            GetInt32MD(binding.second.index),
+            GetInt32MD(binding.second.space),
+          }
+        );
+        bindings->addOperand(entry);
+      }
+
       // HLSL Change Begins
       // Error may happen in Builder->Release for HLSL
       if (CodeGenOpts.HLSLEmbedSourcesInModule) {
         // Add all file contents in a list of filename/content pairs.
         llvm::NamedMDNode *pContents = nullptr;
-        llvm::LLVMContext &LLVMCtx = M->getContext();
         auto AddFile = [&](StringRef name, StringRef content) {
           if (pContents == nullptr) {
             pContents = M->getOrInsertNamedMetadata(

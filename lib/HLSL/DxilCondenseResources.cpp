@@ -380,6 +380,43 @@ static bool LegalizeResourceArrays(Module &M, DxilValueCache *DVC) {
   return Changed;
 }
 
+typedef std::unordered_map<std::string, DxilResourceBase *> ResourceMap;
+template<typename T>
+static inline void GatherResources(const std::vector<std::unique_ptr<T> > &List, ResourceMap *Map) {
+  for (const std::unique_ptr<T> &ptr : List) {
+    (*Map)[ptr->GetGlobalName()] = ptr.get();
+  }
+}
+
+static void ApplyResourceBindingOverrides(DxilModule &DM) {
+  Module &M = *DM.GetModule();
+  NamedMDNode *bindings = M.getNamedMetadata(hlsl::DxilMDHelper::kDxilResourceBindingMDName);
+  if (!bindings)
+    return;
+
+  ResourceMap resourceMap;
+  GatherResources(DM.GetCBuffers(), &resourceMap);
+  GatherResources(DM.GetSRVs(),     &resourceMap);
+  GatherResources(DM.GetUAVs(),     &resourceMap);
+  GatherResources(DM.GetSamplers(), &resourceMap);
+
+  for (MDNode *mdEntry : bindings->operands()) {
+    StringRef name = cast<MDString>(mdEntry->getOperand(0))->getString();
+    unsigned index = cast<ConstantInt>(cast<ValueAsMetadata>(mdEntry->getOperand(1))->getValue())->getLimitedValue();
+    unsigned space = cast<ConstantInt>(cast<ValueAsMetadata>(mdEntry->getOperand(2))->getValue())->getLimitedValue();
+    auto it = resourceMap.find(name);
+    if (it != resourceMap.end()) {
+      DxilResourceBase *resource = it->second;
+      if (!resource->IsAllocated()) {
+        resource->SetLowerBound(index);
+        resource->SetSpaceID(space);
+      }
+    }
+  }
+
+  bindings->eraseFromParent();
+}
+
 static bool LegalizeResources(Module &M, DxilValueCache *DVC) {
 
   bool Changed = false;
@@ -515,7 +552,8 @@ public:
     if (DM.GetCBuffers().size())
       bChanged |= PatchTBuffers(DM);
 
-
+    // Assign resource binding overrides.
+    ApplyResourceBindingOverrides(DM);
 
     // Gather reserved resource registers while we still have
     // unused resources that might have explicit register assignments.

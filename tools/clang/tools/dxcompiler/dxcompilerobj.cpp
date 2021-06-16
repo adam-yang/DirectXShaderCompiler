@@ -546,6 +546,120 @@ static void CreateDefineStrings(
   }
 }
 
+static void ParseResourceBinding(const char *ptr, size_t size, CodeGenOptions &cgOpt) {
+  struct Parser {
+    const char *begin = nullptr;
+    const char *end = nullptr;
+    int line = 1;
+    int col  = 1;
+
+    inline size_t SizeLeft() const {
+      return end - begin;
+    }
+    inline void Advance(size_t count) {
+      for (size_t i = 0; i < count; i++) {
+        if (*begin == '\n') {
+          line++;
+          col = 1;
+        }
+        begin += 1;
+      }
+    }
+    inline bool MatchAndEat(const char *pattern) {
+      size_t size = strlen(pattern);
+      if (size > SizeLeft())
+        return false;
+      if (!memcmp(begin, pattern, size)) {
+        Advance(size);
+        return true;
+      }
+      return false;
+    }
+    inline bool ReachedEnd() const {
+      return begin >= end;
+    }
+    inline void Expect(const char *str) {
+      if (!MatchAndEat(str)) {
+        ErrorExpect(str);
+      }
+    }
+    inline void Throw(const Twine &err) {
+      throw hlsl::Exception(E_FAIL, (Twine("Resource binding file error on line") + Twine(line) + ": " + err).str());
+    }
+    inline void ErrorExpect(const char *str) {
+      Throw(Twine("Expecting '") + str + "'.");
+    }
+    inline void ExpectNewline() {
+      if (!MatchAndEat("\n") && !MatchAndEat("\r\n")) {
+        ErrorExpect("<newline>");
+      }
+    }
+    inline void ParseUntil(SmallString<256> *str, char end) {
+      while (!ReachedEnd() && *begin != ',') {
+        *str += *begin;
+        Advance(1);
+      }
+    }
+    inline unsigned ParseUnsigned() {
+      std::string str;
+      if (!ReachedEnd()) {
+        if (*begin == '-') {
+          str += *begin;
+          Advance(1);
+        }
+
+        while (!ReachedEnd()) {
+          if (*begin >= '0' && *begin <= '9') {
+            str += *begin;
+            Advance(1);
+          }
+          else {
+            break;
+          }
+        }
+      }
+      if (str.empty())
+        Throw(Twine("Empty unsigned int"));
+
+      try {
+        return std::stoul(str);
+      }
+      catch (std::out_of_range) {
+        Throw(Twine(str) + " is out of range.");
+      }
+      catch (...) {
+        Throw(Twine(str) + " is not a valid unsigned integer.");
+      }
+      return 0;
+    }
+  };
+
+  Parser P = { ptr, ptr+size };
+  const char *header = "Name,Index,Pattern";
+  P.Expect(header);
+
+  while (!P.ReachedEnd()) {
+    P.ExpectNewline();
+
+    if (P.ReachedEnd())
+      break;
+
+    SmallString<256> name;
+    P.ParseUntil(&name, ',');
+    P.Expect(",");
+
+    unsigned index = P.ParseUnsigned();
+    P.Expect(",");
+
+    unsigned space = P.ParseUnsigned();
+    CodeGenOptions::HLSLResourceInfo info;
+    info.space = space;
+    info.index = index;
+
+    cgOpt.HLSLResourceBinding[name.c_str()] = info;
+  }
+}
+
 class DxcCompiler : public IDxcCompiler3,
                     public IDxcLangExtensions3,
                     public IDxcContainerEvent,
@@ -801,6 +915,21 @@ public:
           compiler.getCodeGenOpts().HLSLEntryFunction = pUtf8EntryPoint;
         compiler.getLangOpts().HLSLProfile =
           compiler.getCodeGenOpts().HLSLProfile = opts.TargetProfile;
+
+        if (opts.ResourceBindingFile.size()) {
+          hlsl::options::StringRefUtf16 wstrRef(opts.ResourceBindingFile);
+          CComPtr<IDxcBlob> pBlob;
+          if (SUCCEEDED(pIncludeHandler->LoadSource(wstrRef, &pBlob))) {
+            ParseResourceBinding(
+              (const char *)pBlob->GetBufferPointer(),
+              pBlob->GetBufferSize(),
+              compiler.getCodeGenOpts());
+          }
+          else {
+            throw hlsl::Exception(E_FAIL,
+              (Twine("Could not load resource binding file '") + opts.ResourceBindingFile + "'.").str());
+          }
+        }
 
         if (compiler.getCodeGenOpts().HLSLProfile == "rootsig_1_1") {
           rootSigMajor = 1;

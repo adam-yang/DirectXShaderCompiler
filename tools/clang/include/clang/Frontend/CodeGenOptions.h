@@ -243,6 +243,11 @@ public:
   bool HLSLEmbedSourcesInModule = false;
   /// Enable generation of payload access qualifier metadata. 
   bool HLSLEnablePayloadAccessQualifiers = false;
+  struct HLSLResourceInfo {
+    unsigned index = UINT_MAX;
+    unsigned space = UINT_MAX;
+  };
+  std::map<std::string, HLSLResourceInfo> HLSLResourceBinding;
   // HLSL Change Ends
 
   // SPIRV Change Starts
