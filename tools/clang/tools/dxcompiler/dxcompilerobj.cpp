@@ -546,118 +546,180 @@ static void CreateDefineStrings(
   }
 }
 
-static void ParseResourceBinding(const char *ptr, size_t size, CodeGenOptions &cgOpt) {
+static bool ParseResourceBinding(StringRef fileName, StringRef content, llvm::raw_ostream &errors, CodeGenOptions &cgOpt) {
   struct Parser {
-    const char *begin = nullptr;
+    StringRef fileName;
+    const char *curr = nullptr;
     const char *end = nullptr;
     int line = 1;
     int col  = 1;
+    llvm::raw_ostream &errors;
+
+    Parser(StringRef fileName, StringRef content, llvm::raw_ostream &errors) :
+      fileName(fileName),
+      curr(content.data()),
+      end(content.data() + content.size()),
+      errors(errors)
+    {
+    }
 
     inline size_t SizeLeft() const {
-      return end - begin;
+      return end - curr;
     }
     inline void Advance(size_t count) {
+      assert(SizeLeft() >= count);
       for (size_t i = 0; i < count; i++) {
-        if (*begin == '\n') {
+        if (*curr == '\n') {
           line++;
           col = 1;
         }
-        begin += 1;
+        else if (*curr != '\r') {
+          col++;
+        }
+        curr += 1;
       }
     }
     inline bool MatchAndEat(const char *pattern) {
       size_t size = strlen(pattern);
       if (size > SizeLeft())
         return false;
-      if (!memcmp(begin, pattern, size)) {
+      if (!memcmp(curr, pattern, size)) {
         Advance(size);
         return true;
       }
       return false;
     }
     inline bool ReachedEnd() const {
-      return begin >= end;
+      return curr >= end;
     }
-    inline void Expect(const char *str) {
+    inline bool Expect(const char *str) {
       if (!MatchAndEat(str)) {
-        ErrorExpect(str);
+        return ErrorExpect(str);
       }
+      return true;
     }
-    inline void Throw(const Twine &err) {
-      throw hlsl::Exception(E_FAIL, (Twine("Resource binding file error on line") + Twine(line) + ": " + err).str());
+    inline bool Error(const Twine &err) {
+      errors << (Twine(fileName) + ":" + Twine(line) + ":" + Twine(col) + ": " + err).str();
+      return false;
     }
-    inline void ErrorExpect(const char *str) {
-      Throw(Twine("Expecting '") + str + "'.");
+    inline bool ErrorExpect(const char *str) {
+      return Error(Twine("Expecting '") + str + "'.");
     }
-    inline void ExpectNewline() {
+    inline bool ExpectNewline() {
       if (!MatchAndEat("\n") && !MatchAndEat("\r\n")) {
-        ErrorExpect("<newline>");
+        return ErrorExpect("<newline>");
       }
+      return true;
     }
-    inline void ParseUntil(SmallString<256> *str, char end) {
-      while (!ReachedEnd() && *begin != ',') {
-        *str += *begin;
+    inline bool IsDelimiter(char c) {
+      return c == ',' || c == '\n' || c == '\r';
+    }
+
+    inline bool ParseCell(SmallString<256> *str) {
+      bool hasQuote = false;
+      if (*curr == '"') {
+        hasQuote = true;
         Advance(1);
       }
-    }
-    inline unsigned ParseUnsigned() {
-      std::string str;
-      if (!ReachedEnd()) {
-        if (*begin == '-') {
-          str += *begin;
-          Advance(1);
-        }
 
-        while (!ReachedEnd()) {
-          if (*begin >= '0' && *begin <= '9') {
-            str += *begin;
-            Advance(1);
+      bool seenEndQuote = false;
+      while (!ReachedEnd() && !IsDelimiter(*curr)) {
+        // Double quotes
+        if (*curr == '"') {
+          Advance(1);
+          if (!hasQuote) {
+            return Error("'\"' not allowed in non-quoted cell.");
           }
-          else {
+          if (*curr == '"') {
+            *str += '"';
+            Advance(1);
+            continue;
+          }
+          else if (IsDelimiter(*curr)) {
+            seenEndQuote = true;
             break;
           }
+          else {
+            return Error("Unexpected character after quote.");
+          }
         }
-      }
-      if (str.empty())
-        Throw(Twine("Empty unsigned int"));
 
+        *str += *curr;
+        Advance(1);
+      }
+
+      if (hasQuote && !seenEndQuote) {
+        return Error("Expected end quote '\"'.");
+      }
+
+      return true;
+    }
+    inline unsigned ParseUnsignedCell(unsigned *outResult) {
+      SmallString<256> str;
+      if (!ParseCell(&str))
+        return false;
+
+      bool failed = false;
       try {
-        return std::stoul(str);
+        size_t endIndex = 0;
+        *outResult = std::stoul(str.str(), &endIndex);
+        if (endIndex != str.size())
+          failed = true;
       }
       catch (std::out_of_range) {
-        Throw(Twine(str) + " is out of range.");
+        return Error(Twine(str) + " is out of range of an 32-bit unsigned integer.");
       }
       catch (...) {
-        Throw(Twine(str) + " is not a valid unsigned integer.");
+        failed = true;
       }
-      return 0;
+
+      if (failed)
+        return Error(Twine("'") + str + "' is not a valid unsigned integer.");
+
+      return true;
     }
   };
 
-  Parser P = { ptr, ptr+size };
+  Parser P(fileName, content, errors);
   const char *header = "Name,Index,Pattern";
-  P.Expect(header);
+
+  if (!P.Expect(header))
+    return false;
 
   while (!P.ReachedEnd()) {
-    P.ExpectNewline();
+    if (!P.ExpectNewline())
+      return false;
 
     if (P.ReachedEnd())
       break;
 
     SmallString<256> name;
-    P.ParseUntil(&name, ',');
-    P.Expect(",");
+    if (!P.ParseCell(&name)) return false;
+    if (!P.Expect(",")) return false;
 
-    unsigned index = P.ParseUnsigned();
-    P.Expect(",");
+    unsigned index = 0;
+    if (!P.ParseUnsignedCell(&index)) return false;
+    if (!P.Expect(",")) return false;
 
-    unsigned space = P.ParseUnsigned();
+    unsigned space = 0;
+    if (!P.ParseUnsignedCell(&space)) return false;
+
     CodeGenOptions::HLSLResourceInfo info;
     info.space = space;
     info.index = index;
 
     cgOpt.HLSLResourceBinding[name.c_str()] = info;
   }
+
+  return true;
+}
+
+static HRESULT ErrorWithString(const std::string &error, REFIID riid, void **ppResult) {
+  CComPtr<IDxcResult> pResult;
+  IFT(DxcResult::Create(E_FAIL, DXC_OUT_NONE,
+    { DxcOutputObject::ErrorOutput(CP_UTF8, error.data(), error.size()) }, &pResult));
+  IFT(pResult->QueryInterface(riid, ppResult));
+  return S_OK;
 }
 
 class DxcCompiler : public IDxcCompiler3,
@@ -916,18 +978,28 @@ public:
         compiler.getLangOpts().HLSLProfile =
           compiler.getCodeGenOpts().HLSLProfile = opts.TargetProfile;
 
+        // Parse and apply 
         if (opts.ResourceBindingFile.size()) {
           hlsl::options::StringRefUtf16 wstrRef(opts.ResourceBindingFile);
           CComPtr<IDxcBlob> pBlob;
+          std::string error;
+          llvm::raw_string_ostream os(error);
           if (SUCCEEDED(pIncludeHandler->LoadSource(wstrRef, &pBlob))) {
-            ParseResourceBinding(
-              (const char *)pBlob->GetBufferPointer(),
-              pBlob->GetBufferSize(),
-              compiler.getCodeGenOpts());
+
+            bool succ = ParseResourceBinding(
+              opts.ResourceBindingFile,
+              StringRef((const char *)pBlob->GetBufferPointer(), pBlob->GetBufferSize()),
+              os, compiler.getCodeGenOpts());
+
+            if (!succ) {
+              os.flush();
+              return ErrorWithString(error, riid, ppResult);
+            }
           }
           else {
-            throw hlsl::Exception(E_FAIL,
-              (Twine("Could not load resource binding file '") + opts.ResourceBindingFile + "'.").str());
+            os << Twine("Could not load resource binding file '") + opts.ResourceBindingFile + "'.";
+            os.flush();
+            return ErrorWithString(error, riid, ppResult);
           }
         }
 

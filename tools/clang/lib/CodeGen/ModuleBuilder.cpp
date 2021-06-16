@@ -215,21 +215,22 @@ namespace {
 
       // Add resource binding overrides to the metadata.
       llvm::LLVMContext &LLVMCtx = M->getContext();
-      for (const std::pair<std::string, CodeGenOptions::HLSLResourceInfo> &binding : CodeGenOpts.HLSLResourceBinding) {
-        auto bindings = M->getOrInsertNamedMetadata(
-          hlsl::DxilMDHelper::kDxilResourceBindingMDName);
-        auto GetInt32MD = [&LLVMCtx](uint32_t val) -> llvm::ValueAsMetadata* {
-          return llvm::ValueAsMetadata::get(llvm::ConstantInt::get(llvm::Type::getInt32Ty(LLVMCtx), val));
-        };
-        llvm::MDTuple *entry = llvm::MDNode::get(
-          LLVMCtx,
-          {
-            llvm::MDString::get(LLVMCtx, binding.first),
-            GetInt32MD(binding.second.index),
-            GetInt32MD(binding.second.space),
-          }
-        );
-        bindings->addOperand(entry);
+      if (CodeGenOpts.HLSLResourceBinding.size()) {
+        llvm::NamedMDNode *bindings = M->getOrInsertNamedMetadata(hlsl::DxilMDHelper::kDxilResourceBindingMDName);
+        for (const std::pair<std::string, CodeGenOptions::HLSLResourceInfo> &binding : CodeGenOpts.HLSLResourceBinding) {
+
+          auto GetInt32MD = [&LLVMCtx](uint32_t val) -> llvm::ValueAsMetadata* {
+            return llvm::ValueAsMetadata::get(llvm::ConstantInt::get(llvm::Type::getInt32Ty(LLVMCtx), val));
+          };
+
+          llvm::Metadata *operands[3] = {};
+          operands[hlsl::DxilMDHelper::kDxilResourceBindingName]  = llvm::MDString::get(LLVMCtx, binding.first);
+          operands[hlsl::DxilMDHelper::kDxilResourceBindingIndex] = GetInt32MD(binding.second.index);
+          operands[hlsl::DxilMDHelper::kDxilResourceBindingSpace] = GetInt32MD(binding.second.space);
+
+          llvm::MDTuple *entry = llvm::MDNode::get(LLVMCtx, operands);
+          bindings->addOperand(entry);
+        }
       }
 
       // HLSL Change Begins

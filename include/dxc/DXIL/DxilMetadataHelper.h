@@ -117,6 +117,9 @@ public:
 
   // Resource binding data
   static const char kDxilResourceBindingMDName[];
+  static const unsigned kDxilResourceBindingName  = 0;
+  static const unsigned kDxilResourceBindingIndex = 1;
+  static const unsigned kDxilResourceBindingSpace = 2;
 
   // Old source info.
   static const char kDxilSourceContentsOldMDName[];

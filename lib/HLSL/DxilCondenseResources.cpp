@@ -401,9 +401,15 @@ static void ApplyResourceBindingOverrides(DxilModule &DM) {
   GatherResources(DM.GetSamplers(), &resourceMap);
 
   for (MDNode *mdEntry : bindings->operands()) {
-    StringRef name = cast<MDString>(mdEntry->getOperand(0))->getString();
-    unsigned index = cast<ConstantInt>(cast<ValueAsMetadata>(mdEntry->getOperand(1))->getValue())->getLimitedValue();
-    unsigned space = cast<ConstantInt>(cast<ValueAsMetadata>(mdEntry->getOperand(2))->getValue())->getLimitedValue();
+
+    Metadata *nameMD  = mdEntry->getOperand(DxilMDHelper::kDxilResourceBindingName);
+    Metadata *indexMD = mdEntry->getOperand(DxilMDHelper::kDxilResourceBindingIndex);
+    Metadata *spaceMD = mdEntry->getOperand(DxilMDHelper::kDxilResourceBindingSpace);
+
+    StringRef name = cast<MDString>(nameMD)->getString();
+    unsigned index = cast<ConstantInt>(cast<ValueAsMetadata>(indexMD)->getValue())->getLimitedValue();
+    unsigned space = cast<ConstantInt>(cast<ValueAsMetadata>(spaceMD)->getValue())->getLimitedValue();
+
     auto it = resourceMap.find(name);
     if (it != resourceMap.end()) {
       DxilResourceBase *resource = it->second;
