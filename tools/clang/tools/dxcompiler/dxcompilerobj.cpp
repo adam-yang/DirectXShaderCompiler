@@ -547,168 +547,357 @@ static void CreateDefineStrings(
 }
 
 static bool ParseResourceBinding(StringRef fileName, StringRef content, llvm::raw_ostream &errors, CodeGenOptions &cgOpt) {
+
   struct Parser {
     StringRef fileName;
     const char *curr = nullptr;
-    const char *end = nullptr;
+    const char *end  = nullptr;
     int line = 1;
     int col  = 1;
     llvm::raw_ostream &errors;
+    bool WasNewline = false;
 
-    Parser(StringRef fileName, StringRef content, llvm::raw_ostream &errors) :
+    struct Location {
+      int line = 0;
+      int col = 0;
+    };
+
+    inline Parser(StringRef fileName, StringRef content, llvm::raw_ostream &errors) :
       fileName(fileName),
       curr(content.data()),
       end(content.data() + content.size()),
       errors(errors)
     {
+      EatWhitespace();
     }
-
-    inline size_t SizeLeft() const {
-      return end - curr;
+    inline bool WasJustEndOfLine() const {
+      return WasNewline;
     }
-    inline void Advance(size_t count) {
-      assert(SizeLeft() >= count);
-      for (size_t i = 0; i < count; i++) {
-        if (*curr == '\n') {
-          line++;
-          col = 1;
-        }
-        else if (*curr != '\r') {
-          col++;
-        }
-        curr += 1;
+    inline void EatWhitespace() {
+      for (;;) {
+        if (ReachedEnd())
+          return;
+        if (*curr == ' ' || *curr == '\t')
+          Advance();
+        else
+          break;
       }
     }
-    inline bool MatchAndEat(const char *pattern) {
-      size_t size = strlen(pattern);
-      if (size > SizeLeft())
-        return false;
-      if (!memcmp(curr, pattern, size)) {
-        Advance(size);
-        return true;
+    inline void EatWhiteSpaceAndNewlines() {
+      for (;;) {
+        if (ReachedEnd())
+          return;
+        if (*curr == ' ' || *curr == '\t' || IsNewline(*curr))
+          Advance();
+        else
+          break;
       }
-      return false;
+    }
+    inline Location GetLoc() const {
+      Location loc;
+      loc.line = line;
+      loc.col = col;
+      return loc;
+    }
+    inline void Advance() {
+      if (ReachedEnd())
+        return;
+      if (*curr == '\n') {
+        line++;
+        col = 1;
+      }
+      else if (*curr != '\r') {
+        col++;
+      }
+      curr++;
     }
     inline bool ReachedEnd() const {
       return curr >= end;
     }
-    inline bool Expect(const char *str) {
-      if (!MatchAndEat(str)) {
-        return ErrorExpect(str);
-      }
-      return true;
+    inline void Warn(Location loc, const Twine &err) {
+      (void)Error(loc, err);
     }
-    inline bool Error(const Twine &err) {
-      errors << (Twine(fileName) + ":" + Twine(line) + ":" + Twine(col) + ": " + err).str();
+    inline bool Error(Location loc, const Twine &err) {
+      errors << (Twine(fileName) + ":" + Twine(loc.line) + ":" + Twine(loc.col) + ": " + err).str();
       return false;
     }
-    inline bool ErrorExpect(const char *str) {
-      return Error(Twine("Expecting '") + str + "'.");
+    inline bool Error(const Twine &err) {
+      Error(GetLoc(), err);
+      return false;
     }
-    inline bool ExpectNewline() {
-      if (!MatchAndEat("\n") && !MatchAndEat("\r\n")) {
-        return ErrorExpect("<newline>");
-      }
-      return true;
-    }
-    inline bool IsDelimiter(char c) {
+    inline static bool IsDelimiter(char c) {
       return c == ',' || c == '\n' || c == '\r';
     }
+    inline static bool IsNewline(char c) {
+       return c == '\r' || c == '\n';
+    }
 
-    inline bool ParseCell(SmallString<256> *str) {
+    inline bool ParseCell(SmallVectorImpl<char> *str) {
+      EatWhitespace();
+
       bool hasQuote = false;
       if (*curr == '"') {
         hasQuote = true;
-        Advance(1);
+        Advance();
       }
 
-      bool seenEndQuote = false;
-      while (!ReachedEnd() && !IsDelimiter(*curr)) {
-        // Double quotes
-        if (*curr == '"') {
-          Advance(1);
-          if (!hasQuote) {
-            return Error("'\"' not allowed in non-quoted cell.");
-          }
-          if (*curr == '"') {
-            *str += '"';
-            Advance(1);
-            continue;
-          }
-          else if (IsDelimiter(*curr)) {
-            seenEndQuote = true;
-            break;
-          }
-          else {
-            return Error("Unexpected character after quote.");
-          }
+      while (!ReachedEnd()) {
+        if (IsDelimiter(*curr)) {
+          if (hasQuote)
+            return Error("Expected end quote '\"'.");
+          break;
         }
 
-        *str += *curr;
-        Advance(1);
+        // Double quotes
+        if (*curr == '"') {
+          Advance();
+          if (!hasQuote)
+            return Error("'\"' not allowed in non-quoted cell.");
+          EatWhitespace();
+          if (!IsDelimiter(*curr)) {
+            return Error("Unexpected character after quote.");
+          }
+          break;
+        }
+
+        str->push_back(*curr);
+        Advance();
       }
 
-      if (hasQuote && !seenEndQuote) {
-        return Error("Expected end quote '\"'.");
+      // Handle delimiter
+      {
+        if (IsNewline(*curr)) {
+          WasNewline = true;
+          EatWhiteSpaceAndNewlines();
+        }
+        else {
+          WasNewline = false;
+          Advance();
+        }
       }
 
       return true;
     }
-    inline unsigned ParseUnsignedCell(unsigned *outResult) {
-      SmallString<256> str;
+
+    enum IntegerConversionStatus {
+      Success,
+      OutOfBounds,
+      Invalid,
+      Empty,
+    };
+    inline static IntegerConversionStatus ToUnsigned32(StringRef str, uint32_t *outInteger) {
+      *outInteger = 0;
+
+      if (str.empty())
+        return IntegerConversionStatus::Empty;
+
+      llvm::APInt integer;
+      if (llvm::StringRef(str).getAsInteger(0, integer)) {
+        return IntegerConversionStatus::Invalid;
+      }
+
+      if (integer.getBitWidth() > 32) {
+        return IntegerConversionStatus::OutOfBounds;
+      }
+
+      *outInteger = (uint32_t)integer.getLimitedValue();
+      return IntegerConversionStatus::Success;
+    }
+
+    inline bool ParseResourceIndex(hlsl::DXIL::ResourceClass *outClass, unsigned *outIndex) {
+
+      *outClass = hlsl::DXIL::ResourceClass::Invalid;
+      *outIndex = UINT_MAX;
+
+      auto loc = GetLoc();
+      SmallString<32> str;
       if (!ParseCell(&str))
         return false;
 
-      bool failed = false;
-      try {
-        size_t endIndex = 0;
-        *outResult = std::stoul(str.str(), &endIndex);
-        if (endIndex != str.size())
-          failed = true;
-      }
-      catch (std::out_of_range) {
-        return Error(Twine(str) + " is out of range of an 32-bit unsigned integer.");
-      }
-      catch (...) {
-        failed = true;
+      if (str.empty()) {
+        return Error(loc, "Resource index cannot be empty.");
       }
 
-      if (failed)
-        return Error(Twine("'") + str + "' is not a valid unsigned integer.");
+      switch (str[0]) {
+      case 'b':
+        *outClass = hlsl::DXIL::ResourceClass::CBuffer;
+        break;
+      case 's':
+        *outClass = hlsl::DXIL::ResourceClass::Sampler;
+        break;
+      case 't':
+        *outClass = hlsl::DXIL::ResourceClass::SRV;
+        break;
+      case 'u':
+        *outClass = hlsl::DXIL::ResourceClass::UAV;
+        break;
+      default:
+        return Error(loc, "Invalid resource class. Needs to be one of 'b', 's', 't', or 'u'.");
+        break;
+      }
 
+      StringRef integer( &str[1], str.size() - 1);
+      if (auto result = ToUnsigned32(integer, outIndex)) {
+        switch (result) {
+        case IntegerConversionStatus::OutOfBounds:
+          return Error(loc, Twine() + integer + " is out of bounds of 32-bit integer");
+        default:
+          return Error(loc, Twine() + "'" + integer + "' is an invalid 32-bit integer.");
+        }
+      }
+
+      return true;
+    }
+
+    inline bool ParseUnsignedCell(unsigned *outResult) {
+      auto loc = GetLoc();
+      SmallString<32> str;
+      if (!ParseCell(&str))
+        return false;
+
+      if (str.empty()) {
+        return Error(loc, "Expected unsigned integer, but got empty cell.");
+      }
+
+      llvm::APInt integer;
+      if (llvm::StringRef(str).getAsInteger(0, integer)) {
+        return Error(loc, Twine("'") + str + "' is not a valid unsigned integer.");
+      }
+
+      if (integer.getBitWidth() > 32) {
+        return Error(loc, Twine() + "'" + str + "' is out of range of an 32-bit unsigned integer.");
+      }
+
+      *outResult = (uint32_t)integer.getLimitedValue();
+      return true;
+    }
+
+    inline bool ParseUnsignedCell(unsigned *outResult) {
+      auto loc = GetLoc();
+      SmallString<32> str;
+      if (!ParseCell(&str))
+        return false;
+
+      if (str.empty()) {
+        return Error(loc, "Expected unsigned integer, but got empty cell.");
+      }
+
+      llvm::APInt integer;
+      if (llvm::StringRef(str).getAsInteger(0, integer)) {
+        return Error(loc, Twine("'") + str + "' is not a valid unsigned integer.");
+      }
+
+      if (integer.getBitWidth() > 32) {
+        return Error(loc, Twine() + "'" + str + "' is out of range of an 32-bit unsigned integer.");
+      }
+
+      *outResult = (uint32_t)integer.getLimitedValue();
       return true;
     }
   };
 
   Parser P(fileName, content, errors);
-  const char *header = "Name,Index,Pattern";
 
-  if (!P.Expect(header))
-    return false;
+  enum class ColumnType {
+    Name,
+    Index,
+    Space,
+    Unknown,
+  };
+
+  llvm::SmallVector<ColumnType, 5> columns;
+  std::unordered_set<ColumnType> columnsSet;
+
+  for (;;) {
+    llvm::SmallString<32> column;
+    bool ReachedEOL = false;
+    if (!P.ParseCell(&column)) {
+      return false;
+    }
+
+    for (char &c : column)
+      c = std::tolower(c);
+
+    auto loc = P.GetLoc();
+    if (column == "name") {
+      if (!columnsSet.insert(ColumnType::Name).second) {
+        return P.Error(loc, "Column 'Name' already specified.");
+      }
+      columns.push_back(ColumnType::Name);
+    }
+    else if (column == "index") {
+      if (!columnsSet.insert(ColumnType::Index).second) {
+        return P.Error(loc, "Column 'Index' already specified.");
+      }
+      columns.push_back(ColumnType::Index);
+    }
+    else if (column == "space") {
+      if (!columnsSet.insert(ColumnType::Space).second) {
+        return P.Error(loc, "Column 'Space' already specified.");
+      }
+      columns.push_back(ColumnType::Space);
+    }
+    else {
+      P.Warn(loc, Twine() + "Unknown column '" + column + "'");
+      columns.push_back(ColumnType::Unknown);
+    }
+
+    if (P.WasJustEndOfLine())
+      break;
+  }
+
+  if (!columnsSet.count(ColumnType::Name)  &&
+      !columnsSet.count(ColumnType::Index) &&
+      !columnsSet.count(ColumnType::Space))
+  {
+    return P.Error(Twine() + "Need at least 'Name', 'Index', and 'Space'.");
+  }
 
   while (!P.ReachedEnd()) {
-    if (!P.ExpectNewline())
-      return false;
 
-    if (P.ReachedEnd())
-      break;
-
-    SmallString<256> name;
-    if (!P.ParseCell(&name)) return false;
-    if (!P.Expect(",")) return false;
-
+    SmallString<32> name;
+    hlsl::DXIL::ResourceClass cls = hlsl::DXIL::ResourceClass::Invalid;
+    SmallString<32> unknown;
     unsigned index = 0;
-    if (!P.ParseUnsignedCell(&index)) return false;
-    if (!P.Expect(",")) return false;
-
     unsigned space = 0;
-    if (!P.ParseUnsignedCell(&space)) return false;
+
+    for (auto column : columns) {
+      switch (column) {
+      case ColumnType::Name:
+      {
+        if (!P.ParseCell(&name))
+          return false;
+      } break;
+
+      case ColumnType::Index:
+      {
+        if (!P.ParseResourceIndex(&cls, &index))
+          return false;
+      } break;
+
+      case ColumnType::Space:
+      {
+        if (!P.ParseUnsignedCell(&space))
+          return false;
+      } break;
+      default:
+      {
+        if (!P.ParseCell(&unknown))
+          return false;
+      } break;
+      }
+    }
 
     CodeGenOptions::HLSLResourceInfo info;
+    info.resourceClass = cls;
     info.space = space;
     info.index = index;
 
     cgOpt.HLSLResourceBinding[name.c_str()] = info;
+
+    if (!P.WasJustEndOfLine()) {
+      return P.Error("Unexpected cell.");
+    }
   }
 
   return true;

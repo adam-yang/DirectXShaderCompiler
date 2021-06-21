@@ -244,6 +244,7 @@ public:
   /// Enable generation of payload access qualifier metadata. 
   bool HLSLEnablePayloadAccessQualifiers = false;
   struct HLSLResourceInfo {
+    hlsl::DXIL::ResourceClass resourceClass = hlsl::DXIL::ResourceClass::Invalid;
     unsigned index = UINT_MAX;
     unsigned space = UINT_MAX;
   };
