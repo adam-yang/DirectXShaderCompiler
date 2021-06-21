@@ -1,0 +1,6 @@
+Name,Index,Pattern
+"cb",10,30
+cb_2,42,999
+samp0,1,2
+texture_0,1,2
+uav_0,1,2

@@ -419,8 +419,6 @@ static void ApplyResourceBindingOverrides(DxilModule &DM) {
       }
     }
   }
-
-  bindings->eraseFromParent();
 }
 
 static bool LegalizeResources(Module &M, DxilValueCache *DVC) {
