@@ -9,9 +9,6 @@
 
 #pragma once
 
-#ifndef __DXC_RESOURCEBINDING__
-#define __DXC_RESOURCEBINDING__
-
 #include "llvm/ADT/StringRef.h"
 #include "dxc/DXIL/DxilConstants.h"
 
@@ -43,5 +40,3 @@ void ApplyResourceBindingOverridesFromMetadata(hlsl::DxilModule &DM);
 void WriteResourceBindingFile(const hlsl::DxilModule &DM, llvm::raw_ostream &os);
 
 }
-
-#endif

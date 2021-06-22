@@ -39,6 +39,15 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
       int col = 0;
     };
 
+    inline static bool IsDelimiter(char c) {
+      return c == ',' || c == '\n' || c == '\r';
+    }
+    inline static bool IsNewline(char c) {
+       return c == '\r' || c == '\n';
+    }
+    inline  static bool IsWhitespace(char c) {
+      return c == ' ' || c == '\t';
+    }
     inline Parser(StringRef fileName, StringRef content, llvm::raw_ostream &errors) :
       fileName(fileName),
       curr(content.data()),
@@ -50,11 +59,10 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
     inline bool WasJustEndOfLine() const {
       return WasNewline;
     }
+
     inline void EatWhitespace() {
       for (;;) {
-        if (ReachedEnd())
-          return;
-        if (*curr == ' ' || *curr == '\t')
+        if (IsWhitespace(Peek()))
           Advance();
         else
           break;
@@ -62,9 +70,7 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
     }
     inline void EatWhiteSpaceAndNewlines() {
       for (;;) {
-        if (ReachedEnd())
-          return;
-        if (*curr == ' ' || *curr == '\t' || IsNewline(*curr))
+        if (IsWhitespace(Peek()) || IsNewline(Peek()))
           Advance();
         else
           break;
@@ -102,54 +108,65 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
       Error(GetLoc(), err);
       return false;
     }
-    inline static bool IsDelimiter(char c) {
-      return c == ',' || c == '\n' || c == '\r';
-    }
-    inline static bool IsNewline(char c) {
-       return c == '\r' || c == '\n';
+    inline char Peek() const {
+      if (ReachedEnd()) return '\0';
+      return *curr;
     }
 
     inline bool ParseCell(SmallVectorImpl<char> *str) {
       EatWhitespace();
 
+      if (ReachedEnd()) {
+        return Error("Unexpected EOF when parsing cell.");
+      }
+
       bool hasQuote = false;
-      if (*curr == '"') {
+      if (Peek() == '"') {
         hasQuote = true;
         Advance();
       }
 
       while (!ReachedEnd()) {
-        if (IsDelimiter(*curr)) {
+        if (IsDelimiter(Peek())) {
           if (hasQuote)
             return Error("Expected end quote '\"'.");
+          // Trim the white space at the end of the string
+          while (str->size() && IsWhitespace(str->back())) {
+            str->pop_back();
+          }
           break;
         }
-
         // Double quotes
-        if (*curr == '"') {
+        if (Peek() == '"') {
           Advance();
           if (!hasQuote)
             return Error("'\"' not allowed in non-quoted cell.");
           EatWhitespace();
-          if (!IsDelimiter(*curr)) {
+          if (!IsDelimiter(Peek())) {
             return Error("Unexpected character after quote.");
           }
           break;
         }
 
-        str->push_back(*curr);
+        str->push_back(Peek());
         Advance();
       }
 
       // Handle delimiter
       {
-        if (IsNewline(*curr)) {
-          WasNewline = true;
-          EatWhiteSpaceAndNewlines();
-        }
-        else {
+        // If this delimiter is not a newline, set our newline flag to false.
+        if (!IsNewline(Peek())) {
           WasNewline = false;
           Advance();
+
+          // Eat white spaces so we can detect the next newline if this
+          // is a trailing comma.
+          EatWhitespace();
+        }
+
+        if (IsNewline(Peek())) {
+          WasNewline = true;
+          EatWhiteSpaceAndNewlines();
         }
       }
 
