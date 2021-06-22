@@ -817,8 +817,12 @@ public:
           CComPtr<IDxcBlob> pBlob;
           std::string error;
           llvm::raw_string_ostream os(error);
-          if (SUCCEEDED(pIncludeHandler->LoadSource(wstrRef, &pBlob))) {
-
+          if (!pIncludeHandler) {
+            os << Twine("Resource binding file '") + opts.ResourceBindingFile + "' required, but no include handler was given.";
+            os.flush();
+            return ErrorWithString(error, riid, ppResult);
+          }
+          else if (SUCCEEDED(pIncludeHandler->LoadSource(wstrRef, &pBlob))) {
             bool succ = hlsl::ParseResourceBindingFile(
               opts.ResourceBindingFile,
               StringRef((const char *)pBlob->GetBufferPointer(), pBlob->GetBufferSize()),

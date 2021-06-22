@@ -95,7 +95,7 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
       curr++;
     }
     inline bool ReachedEnd() const {
-      return curr >= end;
+      return curr >= end || *curr == '\0';
     }
     inline void Warn(Location loc, const Twine &err) {
       (void)Error(loc, err);
@@ -316,8 +316,8 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
       break;
   }
 
-  if (!columnsSet.count(ColumnType::Name)  &&
-      !columnsSet.count(ColumnType::Index) &&
+  if (!columnsSet.count(ColumnType::Name)  ||
+      !columnsSet.count(ColumnType::Index) ||
       !columnsSet.count(ColumnType::Space))
   {
     return P.Error(Twine() + "Need at least 'Name', 'Index', and 'Space'.");
@@ -331,7 +331,8 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
     unsigned index = 0;
     unsigned space = 0;
 
-    for (auto column : columns) {
+    for (unsigned i = 0; i < columns.size(); i++) {
+      ColumnType column = columns[i];
       switch (column) {
       case ColumnType::Name:
       {
@@ -355,6 +356,10 @@ bool hlsl::ParseResourceBindingFile(llvm::StringRef fileName, llvm::StringRef co
         if (!P.ParseCell(&unknown))
           return false;
       } break;
+      }
+
+      if (P.WasJustEndOfLine() && i+1 != columns.size()) {
+        return P.Error("Row ended after just " + Twine(i+1) + " columns. Expected " + Twine(columns.size()) + ".");
       }
     }
 

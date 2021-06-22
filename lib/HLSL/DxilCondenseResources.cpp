@@ -22,6 +22,7 @@
 #include "dxc/DXIL/DxilUtil.h"
 #include "dxc/HLSL/HLMatrixType.h"
 #include "dxc/HLSL/HLModule.h"
+#include "dxc/DxilResourceBinding/DxilResourceBinding.h"
 #include "llvm/Analysis/DxilValueCache.h"
 #include "dxc/DXIL/DxilMetadataHelper.h"
 
@@ -388,39 +389,6 @@ static inline void GatherResources(const std::vector<std::unique_ptr<T> > &List,
   }
 }
 
-static void ApplyResourceBindingOverrides(DxilModule &DM) {
-  Module &M = *DM.GetModule();
-  NamedMDNode *bindings = M.getNamedMetadata(hlsl::DxilMDHelper::kDxilResourceBindingMDName);
-  if (!bindings)
-    return;
-
-  ResourceMap resourceMap;
-  GatherResources(DM.GetCBuffers(), &resourceMap);
-  GatherResources(DM.GetSRVs(),     &resourceMap);
-  GatherResources(DM.GetUAVs(),     &resourceMap);
-  GatherResources(DM.GetSamplers(), &resourceMap);
-
-  for (MDNode *mdEntry : bindings->operands()) {
-
-    Metadata *nameMD  = mdEntry->getOperand(DxilMDHelper::kDxilResourceBindingName);
-    Metadata *indexMD = mdEntry->getOperand(DxilMDHelper::kDxilResourceBindingIndex);
-    Metadata *spaceMD = mdEntry->getOperand(DxilMDHelper::kDxilResourceBindingSpace);
-
-    StringRef name = cast<MDString>(nameMD)->getString();
-    unsigned index = cast<ConstantInt>(cast<ValueAsMetadata>(indexMD)->getValue())->getLimitedValue();
-    unsigned space = cast<ConstantInt>(cast<ValueAsMetadata>(spaceMD)->getValue())->getLimitedValue();
-
-    auto it = resourceMap.find(name);
-    if (it != resourceMap.end()) {
-      DxilResourceBase *resource = it->second;
-      if (!resource->IsAllocated()) {
-        resource->SetLowerBound(index);
-        resource->SetSpaceID(space);
-      }
-    }
-  }
-}
-
 static bool LegalizeResources(Module &M, DxilValueCache *DVC) {
 
   bool Changed = false;
@@ -557,7 +525,7 @@ public:
       bChanged |= PatchTBuffers(DM);
 
     // Assign resource binding overrides.
-    ApplyResourceBindingOverrides(DM);
+    hlsl::ApplyResourceBindingOverridesFromMetadata(DM);
 
     // Gather reserved resource registers while we still have
     // unused resources that might have explicit register assignments.
