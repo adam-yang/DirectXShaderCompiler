@@ -601,6 +601,7 @@ public:
   int getLocalSlot(const Value *V);
   int getGlobalSlot(const GlobalValue *V);
   int getMetadataSlot(const MDNode *N);
+  int getOrCreateMetadataSlot(const MDNode *N); // HLSL Change
   int getAttributeGroupSlot(AttributeSet AS);
 
   /// If you'd like to deal with a function instead of just a module, use
@@ -837,6 +838,7 @@ void SlotTracker::processFunction() {
 }
 
 void SlotTracker::processFunctionMetadata(const Function &F) {
+#if 0 // HLSL Change - This could be extremely slow when the function is big and there's a lot of debug info
   SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
   for (auto &BB : F) {
     F.getAllMetadata(MDs);
@@ -846,6 +848,7 @@ void SlotTracker::processFunctionMetadata(const Function &F) {
     for (auto &I : BB)
       processInstructionMetadata(I);
   }
+#endif // HLSL Change
 }
 
 void SlotTracker::processInstructionMetadata(const Instruction &I) {
@@ -945,6 +948,25 @@ void SlotTracker::CreateFunctionSlot(const Value *V) {
   ST_DEBUG("  Inserting value [" << V->getType() << "] = " << V << " slot=" <<
            DestSlot << " [o]\n");
 }
+
+// HLSL Change - begin
+int SlotTracker::getOrCreateMetadataSlot(const MDNode *N) {
+  assert(N && "Can't insert a null Value into SlotTracker!");
+
+  unsigned DestSlot = mdnNext;
+  auto insertResult = mdnMap.insert(std::make_pair(N, DestSlot));
+  if (!insertResult.second)
+    return insertResult.first->second;
+  ++mdnNext;
+
+  // Recursively add any MDNodes referenced by operands.
+  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i)
+    if (const MDNode *Op = dyn_cast_or_null<MDNode>(N->getOperand(i)))
+      CreateMetadataSlot(Op);
+
+  return DestSlot;
+}
+// HLSL Change - end
 
 /// CreateModuleSlot - Insert the specified MDNode* into the slot table.
 void SlotTracker::CreateMetadataSlot(const MDNode *N) {
@@ -1962,7 +1984,7 @@ static void WriteAsOperandInternal(raw_ostream &Out, const Metadata *MD,
       MachineStorage = make_unique<SlotTracker>(Context);
       Machine = MachineStorage.get();
     }
-    int Slot = Machine->getMetadataSlot(N);
+    int Slot = Machine->getOrCreateMetadataSlot(N); // HLSL CHange - Lazily assign slots here.
     if (Slot == -1)
       // Give the pointer value instead of "badref", since this comes up all
       // the time when debugging.
