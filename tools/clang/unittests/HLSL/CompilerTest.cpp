@@ -149,6 +149,7 @@ public:
   TEST_METHOD(CompileThenSetRootSignatureThenValidate)
   TEST_METHOD(CompileSetPrivateThenWithStripPrivate)
   TEST_METHOD(CompileWithMultiplePrivateOptionsThenFail)
+  TEST_METHOD(CompileLibAndCheckPdb)
 
 
   void TestResourceBindingImpl(
@@ -2581,6 +2582,239 @@ TEST_F(CompilerTest, CompileWithMultiplePrivateOptionsThenFail) {
   LPCSTR pErrorMsg2 =
       "Cannot specify /Qpdb_in_private and /setprivate together.";
   CheckOperationResultMsgs(pResult, &pErrorMsg2, 1, false, false);
+}
+
+struct LibTestIncludeHandler : public IDxcIncludeHandler {
+  DXC_MICROCOM_REF_FIELD(m_dwRef)
+  std::map<std::wstring, CComPtr<IDxcBlob> > sources;
+public:
+  DXC_MICROCOM_ADDREF_RELEASE_IMPL(m_dwRef)
+  LibTestIncludeHandler() : m_dwRef(0) {}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppvObject) override {
+    return DoBasicQueryInterface<IDxcIncludeHandler>(this,  iid, ppvObject);
+  }
+  void AddSource(const WCHAR *name, IDxcBlob *pBlob) {
+    sources[std::wstring(L"./") + std::wstring(name)] = pBlob;
+  }
+  virtual HRESULT STDMETHODCALLTYPE LoadSource(
+    _In_z_ LPCWSTR pFilename,                                 // Candidate filename.
+    _COM_Outptr_result_maybenull_ IDxcBlob **ppIncludeSource  // Resultant source object for included file, nullptr if not found.
+  ) override
+  {
+    if (!ppIncludeSource) return E_POINTER;
+    *ppIncludeSource = nullptr;
+    auto it = sources.find(pFilename);
+    if (it == sources.end()) {
+      return E_FAIL;
+    }
+    return it->second.QueryInterface(ppIncludeSource);
+  }
+};
+
+TEST_F(CompilerTest, CompileLibAndCheckPdb) {
+
+  struct Entry {
+    struct Source_File {
+      std::wstring name;
+      std::string content;
+    };
+    std::string name;
+    std::vector<Source_File> files;
+    std::vector<std::wstring> args;
+    std::vector<std::string> libraries;
+    CComPtr<IDxcBlob> pDxil;
+    CComPtr<IDxcBlob> pPdb;
+    bool is_compiled = false;
+    std::wstring profile;
+    std::wstring entry;
+
+    static std::wstring ToWstring(const char *ptr, size_t size) {
+      std::wstring wstr;
+      auto state = std::mbstate_t();
+      size_t wsize = std::mbsrtowcs(nullptr, &ptr, 0, &state);
+      if (wsize != static_cast<size_t>(-1)) {
+        std::unique_ptr<wchar_t[]> pNew(new wchar_t[wsize + 1]);
+        std::mbsrtowcs(pNew.get(), &ptr, size + 1, &state);
+        wstr = pNew.get();
+      }
+      return wstr;
+    }
+    static std::wstring ToWstring(const std::string &str) {
+      return ToWstring(str.data(), str.size());
+    }
+
+    Entry &AddArgs(std::vector<std::string> in_args) {
+      for (std::string &Arg : in_args)
+        args.push_back(ToWstring(Arg));
+      return *this;
+    }
+    Entry &AddArg(std::string arg) {
+      args.push_back(ToWstring(arg));
+      return *this;
+    }
+    Entry &AddSource(std::string name, std::string content) {
+      VERIFY_IS_TRUE(is_compiled);
+      files.push_back(Source_File{ToWstring(name), content});
+      return *this;
+    }
+    Entry &AddLib(std::string name) {
+      VERIFY_IS_FALSE(is_compiled);
+      libraries.push_back(name);
+      return *this;
+    }
+  };
+
+  struct LinkTree {
+    std::deque<Entry> entries;
+    Entry &AddCompiled(std::string name, std::string profile) {
+      entries.push_back({});
+      Entry &ret = entries.back();
+      ret.name = name;
+      ret.is_compiled = true;
+      ret.profile = Entry::ToWstring(profile);
+      return ret;
+    }
+    Entry &AddLinked(std::string name, std::string profile, std::string entry="") {
+      entries.push_back({});
+      Entry &ret = entries.back();
+      ret.name = name;
+      ret.profile = Entry::ToWstring(profile);
+      ret.entry = Entry::ToWstring(entry);
+      return ret;
+    }
+    Entry &FindEntry(std::string name) {
+      for (unsigned i = 0; i < entries.size(); i++)
+        if (entries[i].name == name)
+          return entries[i];
+      VERIFY_FAIL();
+      return entries.front();
+    }
+  };
+
+  LinkTree tree;
+  tree.AddCompiled("A", "lib_6_3")
+    .AddArgs({"/Zi"})
+    .AddSource("a.hlsl", R"(
+            #include "a_helper.h"
+            export float get_value_a() {
+              return HELPER_A_VALUE;
+            }
+          )")
+    .AddSource("a_helper.h", "#define HELPER_A_VALUE 10");
+
+  tree.AddCompiled("B", "lib_6_3")
+    .AddArgs({"/Zi"})
+    .AddSource("b.hlsl", R"(
+            #include "b_helper.h"
+            export float get_value_b() {
+              return HELPER_B_VALUE;
+            }
+          )")
+    .AddSource("b_helper.h", "#define HELPER_B_VALUE 10");
+
+  tree.AddCompiled("C", "lib_6_3")
+    .AddArgs({"/Zi"})
+    .AddSource("c.hlsl", R"(
+            #include "c_helper.h"
+            float get_value_a();
+            float get_value_b();
+            [shader("pixel")]
+            export float main() : SV_Target {
+              return get_value_a() + get_value_b() + HELPER_C_VALUE;
+            }
+          )")
+    .AddSource("c_helper.h", "#define HELPER_C_VALUE 10");
+
+  tree.AddLinked("AB", "lib_6_3")
+    .AddArgs({"/Zi"})
+    .AddLib("A")
+    .AddLib("B");
+
+  tree.AddLinked("ABC", "lib_6_3")
+    .AddArgs({"/Zi"})
+    .AddLib("AB")
+    .AddLib("C");
+
+  tree.AddLinked("ABC", "ps_6_3", "main")
+    .AddArgs({"/Zi"})
+    .AddLib("AB")
+    .AddLib("C");
+
+  CComPtr<IDxcCompiler2> pCompiler;
+  VERIFY_SUCCEEDED(m_dllSupport.CreateInstance(CLSID_DxcCompiler, &pCompiler));
+  CComPtr<IDxcLibrary> pLib;
+  VERIFY_SUCCEEDED(m_dllSupport.CreateInstance(CLSID_DxcLibrary, &pLib));
+
+  for (unsigned i = 0; i < tree.entries.size(); i++) {
+    Entry &entry = tree.entries[i];
+    if (entry.is_compiled) {
+      CComPtr<LibTestIncludeHandler> pInclude = new LibTestIncludeHandler();
+      CComPtr<IDxcBlobEncoding> pMainSource;
+      Entry::Source_File main_file = entry.files.front();
+      VERIFY_SUCCEEDED(pLib->CreateBlobWithEncodingFromPinned(main_file.content.data(), main_file.content.size(), CP_UTF8, &pMainSource));
+
+      for (unsigned j = 1; j < entry.files.size(); j++) {
+        std::wstring filename = entry.files[j].name;
+        std::string &content = entry.files[j].content;
+        CComPtr<IDxcBlobEncoding> pContentBlob;
+        VERIFY_SUCCEEDED(pLib->CreateBlobWithEncodingFromPinned(content.data(), content.size(), CP_UTF8, &pContentBlob));
+        pInclude->AddSource(filename.c_str(), pContentBlob);
+      }
+      std::vector<const WCHAR *> args;
+      for (unsigned j = 0; j < entry.args.size(); j++) {
+        args.push_back(entry.args[j].c_str());
+      }
+
+      CComHeapPtr<WCHAR> pDebugName;
+      CComPtr<IDxcOperationResult> pResult;
+      CComPtr<IDxcBlob> pPdb;
+      VERIFY_SUCCEEDED(pCompiler->CompileWithDebug(
+        pMainSource, main_file.name.c_str(), nullptr, entry.profile.c_str(),
+        args.data(), args.size(), nullptr, 0, pInclude, &pResult, &pDebugName, &pPdb));
+
+      HRESULT compile_result = S_OK;
+      VERIFY_SUCCEEDED(pResult->GetStatus(&compile_result));
+      VERIFY_SUCCEEDED(compile_result);
+
+      VERIFY_SUCCEEDED(pResult->GetResult(&entry.pDxil));
+      VERIFY_SUCCEEDED(pPdb.QueryInterface(&entry.pPdb));
+    }
+    else {
+      VERIFY_IS_TRUE(entry.libraries.size() > 0);
+
+      CComPtr<IDxcLinker> pLinker;
+      VERIFY_SUCCEEDED(m_dllSupport.CreateInstance(CLSID_DxcLinker, &pLinker));
+
+      std::vector<std::wstring> lib_names;
+
+      for (unsigned i = 0; i < entry.libraries.size(); i++) {
+        Entry &lib_entry = tree.FindEntry(entry.libraries[i]);
+        VERIFY_IS_NOT_NULL(lib_entry.pDxil.p);
+        lib_names.push_back(Entry::ToWstring(lib_entry.name));
+
+        std::wstring name = Entry::ToWstring(lib_entry.name);
+        VERIFY_SUCCEEDED(pLinker->RegisterLibrary(name.c_str(), lib_entry.pDxil));
+      }
+      std::vector<const WCHAR *> lib_names_ptr;
+      for (std::wstring &name : lib_names)
+        lib_names_ptr.push_back(name.c_str());
+
+      std::vector<const WCHAR *> args;
+      for (std::wstring &arg : entry.args)
+        args.push_back(arg.c_str());
+
+      CComPtr<IDxcOperationResult> pOpResult;
+      VERIFY_SUCCEEDED(pLinker->Link(entry.entry.size() ? entry.entry.c_str() : nullptr,
+        entry.profile.c_str(), lib_names_ptr.data(), lib_names_ptr.size(),
+        args.data(), args.size(), &pOpResult));
+
+      HRESULT link_result = S_OK;
+      VERIFY_SUCCEEDED(pOpResult->GetStatus(&link_result));
+      VERIFY_SUCCEEDED(link_result);
+      VERIFY_SUCCEEDED(pOpResult->GetResult(&entry.pDxil));
+    }
+  }
+
 }
 
 TEST_F(CompilerTest, CompileWhenIncludeThenLoadInvoked) {

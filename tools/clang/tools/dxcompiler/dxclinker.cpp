@@ -108,6 +108,51 @@ private:
   std::unique_ptr<DxilLinker> m_pLinker;
   CComPtr<IDxcContainerEventsHandler> m_pDxcContainerEventsHandler;
   std::vector<CComPtr<IDxcBlob>> m_blobs; // Keep blobs live for lazy load.
+
+  struct DebugInfo {
+    unsigned blobIndex = 0;
+    DxilShaderHash hash = {0};
+    std::string debugName;
+    bool HasDebugInfo() const {
+      return debugName.size() != 0;
+    }
+  };
+  std::unordered_map<std::wstring, DebugInfo> m_DebugInfo;
+
+  void RegisterDebugInfo(const WCHAR *pLibName, IDxcBlob *pBlob, unsigned blobIndex) {
+    bool bHasInternalOrExternalDebugInfo = false;
+    const hlsl::DxilContainerHeader *pContainerHeader = (const hlsl::DxilContainerHeader *)pBlob->GetBufferPointer();
+
+    DxilShaderHash hash = {0};
+    const DxilShaderDebugName *pDebugName = nullptr;
+    for (auto it = hlsl::begin(pContainerHeader); it != hlsl::end(pContainerHeader); it++) {
+      const hlsl::DxilPartHeader *pPartHeader = *it;
+      if (pPartHeader->PartFourCC == DxilFourCC::DFCC_ShaderDebugName) {
+        pDebugName = (const DxilShaderDebugName *)(pPartHeader+1);
+        bHasInternalOrExternalDebugInfo = true;
+      }
+      else if (pPartHeader->PartFourCC == DxilFourCC::DFCC_ShaderHash) {
+        memcpy(&hash, pPartHeader+1, sizeof(hash));
+      }
+    }
+
+    DebugInfo info = {0};
+    info.blobIndex = blobIndex;
+    info.hash = hash;
+    if (pDebugName) {
+      info.debugName = std::string((const char *)(pDebugName + 1), pDebugName->NameLength);
+    }
+    std::wstring Name(pLibName);
+    m_DebugInfo[Name] = std::move(info);
+  }
+
+  HRESULT WritePdb(const LPCWSTR *pLibNames, UINT uLibCount, IDxcBlob *pDxilBlob, IDxcBlob **ppOutPdb) {
+    for (unsigned i = 0; i < uLibCount; i++) {
+      if (m_DebugInfo[pLibNames[i]].HasDebugInfo()) {
+      }
+    }
+    return S_OK;
+  }
 };
 
 HRESULT
@@ -141,7 +186,9 @@ DxcLinker::RegisterLibrary(_In_opt_ LPCWSTR pLibName, // Name of the library.
 
     if (m_pLinker->RegisterLib(pUtf8LibName.m_psz, std::move(pModule),
                                std::move(pDebugModule))) {
+      const unsigned blobIndex = m_blobs.size();
       m_blobs.emplace_back(pBlob);
+      RegisterDebugInfo(pLibName, pBlob, blobIndex);
       return S_OK;
     } else {
       return E_INVALIDARG;
@@ -291,6 +338,10 @@ HRESULT STDMETHODCALLTYPE DxcLinker::Link(
             }
           }
           // TODO: DFCC_ShaderDebugName
+        }
+
+        CComPtr<IDxcBlob> pPdb;
+        if (SUCCEEDED(WritePdb(pLibNames, libCount, pOutputBlob, &pPdb)) {
         }
 
         hasErrorOccurred = Diag.hasErrorOccurred();
