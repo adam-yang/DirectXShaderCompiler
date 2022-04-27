@@ -238,7 +238,7 @@ RDAT_STRUCT_END()
 
 #endif // DEF_RDAT_TYPES
 
-#ifdef DEF_LIBI_TYPES
+#ifdef DEF_RDAT_ENUMS
 
 RDAT_ENUM_START(DxilLinkInfoType, uint32_t)
   RDAT_ENUM_VALUE(Invalid,   0)
@@ -246,8 +246,8 @@ RDAT_ENUM_START(DxilLinkInfoType, uint32_t)
   RDAT_ENUM_VALUE(DxrLink,   2)
 RDAT_ENUM_END()
 
-RDAT_STRUCT(DxilPdbSourceInfo)
-RDAT_STRUCT_END()
+//RDAT_STRUCT(DxilPdbSourceInfo)
+//RDAT_STRUCT_END()
 
 RDAT_ENUM_START(DxilLinkInfoPartType, uint32_t)
   RDAT_ENUM_VALUE(Invalid,    0)
@@ -257,43 +257,25 @@ RDAT_ENUM_START(DxilLinkInfoPartType, uint32_t)
   RDAT_ENUM_VALUE(SourceInfo, 4)
 RDAT_ENUM_END()
 
+#endif // DEF_RDAT_ENUMS
+
+#ifdef DEF_RDAT_TYPES
+
 #define RECORD_TYPE DxilLinkInfoPart_PdbRef
-RDAT_STRUCT(DxilLinkInfoPart_PdbRef, PdbRef)
+RDAT_STRUCT_TABLE(DxilLinkInfoPart_PdbRef, DxilLinkInfoPart_PdbRef_Table)
   RDAT_STRING(DebugName)
   RDAT_BYTES(ShaderHash)
 RDAT_STRUCT_END()
 #undef RECORD_TYPE
 
 #define RECORD_TYPE DxilLinkInfoPart_Library
-RDAT_STRUCT(DxilLinkInfoPart_Library)
+RDAT_STRUCT_TABLE(DxilLinkInfoPart_Library, DxilLinkInfoPart_Library_Table)
   RDAT_BYTES(Data)
 RDAT_STRUCT_END()
 #undef RECORD_TYPE
 
 #define RECORD_TYPE DxilLinkInfoPart_LinkInfo
-RDAT_STRUCT(DxilLinkInfoPart_LinkInfo)
-  RDAT_RECORD_REF(DxilLinkInfoCommon, LinkInfo)
-RDAT_STRUCT_END()
-#undef RECORD_TYPE
-
-#define RECORD_TYPE DxilLinkInfoPart
-RDAT_STRUCT(DxilLinkInfoPart)
-  RDAT_ENUM(uint32_t, DxilLinkInfoPartType, Type)
-  RDAT_STRING(LibraryName)
-  RDAT_UNION()
-    RDAT_UNION_IF(PdbRef, ((uint32_t)Type == (uint32_t)DxilLinkInfoPartType::PdbRef))
-      RDAT_RECORD_REF(DxilLinkInfoPart_PdbRef, PdbRef)
-    RDAT_UNION_ELIF(Library, ((uint32_t)Type == (uint32_t)DxilLinkInfoPartType::Library))
-      RDAT_RECORD_REF(DxilLinkInfoPart_Library, Library)
-    RDAT_UNION_ELIF(Library, ((uint32_t)Type == (uint32_t)DxilLinkInfoPartType::Library))
-      RDAT_RECORD_REF(DxilLinkInfoPart_LinkInfo, LinkInfo)
-    RDAT_UNION_ENDIF()
-  RDAT_UNION_END()
-RDAT_STRUCT_END()
-#undef RECORD_TYPE
-
-#define RECORD_TYPE DxilLinkInfoCommon
-RDAT_STRUCT(DxilLinkInfoCommon)
+RDAT_STRUCT_TABLE(DxilLinkInfoPart_LinkInfo, DxilLinkInfoPart_LinkInfo_Table)
   RDAT_STRING(TargetProfile)
   RDAT_STRING(EntryPoint)
   RDAT_STRING_ARRAY_REF(Args)
@@ -301,4 +283,20 @@ RDAT_STRUCT(DxilLinkInfoCommon)
 RDAT_STRUCT_END()
 #undef RECORD_TYPE
 
-#endif // DEF_LIBI_TYPES
+#define RECORD_TYPE DxilLinkInfoPart
+RDAT_STRUCT_TABLE(DxilLinkInfoPart, DxilLinkInfoPartTable)
+  RDAT_ENUM(uint32_t, DxilLinkInfoPartType, Type)
+  RDAT_STRING(LibraryName)
+  RDAT_UNION()
+    RDAT_UNION_IF(PdbRef, ((uint32_t)pRecord->Type == (uint32_t)DxilLinkInfoPartType::PdbRef))
+      RDAT_RECORD_REF(DxilLinkInfoPart_PdbRef, PdbRef)
+    RDAT_UNION_ELIF(Library, ((uint32_t)pRecord->Type == (uint32_t)DxilLinkInfoPartType::Library))
+      RDAT_RECORD_REF(DxilLinkInfoPart_Library, Library)
+    RDAT_UNION_ELIF(LinkInfo, ((uint32_t)pRecord->Type == (uint32_t)DxilLinkInfoPartType::LinkInfo))
+      RDAT_RECORD_REF(DxilLinkInfoPart_LinkInfo, LinkInfo)
+    RDAT_UNION_ENDIF()
+  RDAT_UNION_END()
+RDAT_STRUCT_END()
+#undef RECORD_TYPE
+
+#endif // DEF_RDAT_TYPES

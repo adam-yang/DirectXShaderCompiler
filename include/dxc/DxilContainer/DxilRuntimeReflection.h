@@ -44,9 +44,16 @@ enum class RuntimeDataPartType : uint32_t {
   ResourceTable       = 3,
   FunctionTable       = 4,
   Last_1_3 = FunctionTable,
+
   RawBytes            = 5,
   SubobjectTable      = 6,
   Last_1_4 = SubobjectTable,
+
+  DxilLinkInfoPartTable = 7,
+  DxilLinkInfoPart_PdbRef_Table    = 8,
+  DxilLinkInfoPart_Library_Table   = 9,
+  DxilLinkInfoPart_LinkInfo_Table  = 10,
+
   LastPlus1,
   LastExperimental = LastPlus1 - 1,
 };
@@ -66,6 +73,12 @@ enum class RecordTableIndex : unsigned {
   ResourceTable,
   FunctionTable,
   SubobjectTable,
+
+  DxilLinkInfoPartTable,
+  DxilLinkInfoPart_PdbRef_Table,
+  DxilLinkInfoPart_Library_Table,
+  DxilLinkInfoPart_LinkInfo_Table,
+
   RecordTableCount
 };
 

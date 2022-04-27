@@ -11,6 +11,7 @@
 
 #include "dxc/Support/WinIncludes.h"
 #include "dxc/DxilContainer/DxilContainer.h"
+#include "dxc/DxilContainer/DxilRuntimeReflection.h"
 #include "dxc/Support/ErrorCodes.h"
 #include "dxc/Support/Global.h"
 #include "dxc/Support/FileIOHelper.h"
@@ -147,13 +148,24 @@ private:
   }
 
   HRESULT WritePdb(const LPCWSTR *pLibNames, UINT uLibCount, IDxcBlob *pDxilBlob, IDxcBlob **ppOutPdb) {
+
     for (unsigned i = 0; i < uLibCount; i++) {
       if (m_DebugInfo[pLibNames[i]].HasDebugInfo()) {
+        hlsl::RDAT::DxilLinkInfoPart_PdbRef PdfRef = {};
+        PdfRef.DebugName = m_DebugInfo[pLibNames[i]].debugName;
+        PdfRef.ShaderHash = m_DebugInfo[pLibNames[i]].hash.Digest;
       }
     }
     return S_OK;
   }
 };
+#if 0
+namespace {
+#define DEF_RDAT_TYPES DEF_RDAT_DUMP_IMPL
+#define DEF_RDAT_ENUMS DEF_RDAT_DUMP_IMPL
+#include "dxc/DxilContainer/RDAT_Macros.inl"
+}
+#endif
 
 HRESULT
 DxcLinker::RegisterLibrary(_In_opt_ LPCWSTR pLibName, // Name of the library.
@@ -341,7 +353,7 @@ HRESULT STDMETHODCALLTYPE DxcLinker::Link(
         }
 
         CComPtr<IDxcBlob> pPdb;
-        if (SUCCEEDED(WritePdb(pLibNames, libCount, pOutputBlob, &pPdb)) {
+        if (SUCCEEDED(WritePdb(pLibNames, libCount, pOutputBlob, &pPdb))) {
         }
 
         hasErrorOccurred = Diag.hasErrorOccurred();
