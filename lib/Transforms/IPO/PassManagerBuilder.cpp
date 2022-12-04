@@ -269,8 +269,7 @@ static void addHLSLPasses(bool HLSLHighLevel, unsigned OptLevel, bool OnlyWarnOn
     // lifetime marker cleanup blocks. This is the earliest possible location
     // without interfering with HLSL-specific lowering.
     if (EnableLifetimeMarkers) {
-      MPM.add(createSROAPass());
-      MPM.add(createSimplifyInstPass());
+      MPM.add(createInstructionCombiningPass());
       MPM.add(createJumpThreadingPass());
     }
   }

@@ -954,6 +954,69 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
     Builder.ClearInsertionPoint();
   }
 
+  // HLSL Change - begin
+  if (getLangOpts().HLSL) {
+    // Rewrite the i32 cleanup destionation alloca into a series of i1 allocas for each destination index.
+    if (NormalCleanupDest && !NormalCleanupDest->use_empty() && !NormalCleanupDest->hasOneUse()) {
+      using namespace llvm;
+
+      unsigned MaxDestIndex = 0;
+      for (auto it = NormalCleanupDest->user_begin();
+        it != NormalCleanupDest->user_end();)
+      {
+        User *U = *it; it++;
+        if (StoreInst *Store = dyn_cast<StoreInst>(U)) {
+          ConstantInt *StoredValue = cast<ConstantInt>(Store->getValueOperand());
+          MaxDestIndex = std::max((unsigned)StoredValue->getLimitedValue(), MaxDestIndex);
+        }
+      }
+
+      SmallVector<AllocaInst *, 4> FixedDests;
+      FixedDests.resize(MaxDestIndex+1);
+      for (unsigned DestIndex = 0; DestIndex <= MaxDestIndex; DestIndex++) {
+        AllocaInst *AI = CreateTempAlloca(Builder.getInt1Ty(), Twine("cleanup.dst.") + Twine(DestIndex));
+        FixedDests[DestIndex] = AI;
+      }
+
+      for (auto it = NormalCleanupDest->user_begin();
+        it != NormalCleanupDest->user_end();)
+      {
+        User *U = *it; it++;
+        if (StoreInst *Store = dyn_cast<StoreInst>(U)) {
+          ConstantInt *StoredValue = cast<ConstantInt>(Store->getValueOperand());
+          unsigned DestIndex = StoredValue->getLimitedValue();
+          for (unsigned i = 0; i < FixedDests.size(); i++) {
+            new StoreInst(Builder.getInt1(DestIndex == i), FixedDests[i], Store);
+          }
+          Store->eraseFromParent();
+        }
+      }
+
+      for (auto it = NormalCleanupDest->user_begin();
+        it != NormalCleanupDest->user_end();)
+      {
+        User *U = *it; it++;
+        if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
+          Value *Dest = Builder.getInt32(0);
+          for (unsigned Index = 0; Index < FixedDests.size(); Index++) {
+            AllocaInst *AI = FixedDests[Index];
+            if (AI) {
+              unsigned DestIndex = Index;
+              LoadInst *NewLoad = new LoadInst(AI, "", LI);
+              Dest = SelectInst::Create(NewLoad, Builder.getInt32(DestIndex), Dest, "", LI);
+            }
+          }
+          LI->replaceAllUsesWith(Dest);
+          LI->eraseFromParent();
+        }
+      }
+      assert(NormalCleanupDest->use_empty());
+      NormalCleanupDest->eraseFromParent();
+      NormalCleanupDest = nullptr;
+    }
+  }
+  // HLSL Change - end
+
   // Emit the standard function epilogue.
   FinishFunction(BodyRange.getEnd());
 

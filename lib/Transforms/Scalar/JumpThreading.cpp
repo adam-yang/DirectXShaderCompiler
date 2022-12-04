@@ -1104,6 +1104,9 @@ FindMostPopularDest(BasicBlock *BB,
 bool JumpThreading::ProcessThreadableEdges(Value *Cond, BasicBlock *BB,
                                            ConstantPreference Preference,
                                            Instruction *CxtI) {
+#if 1
+  return false;
+#else
   // If threading this would thread across a loop header, don't even try to
   // thread the edge.
   if (LoopHeaders.count(BB))
@@ -1204,6 +1207,7 @@ bool JumpThreading::ProcessThreadableEdges(Value *Cond, BasicBlock *BB,
 
   // Ok, try to thread it!
   return ThreadEdge(BB, PredsToFactor, MostPopularDest);
+#endif
 }
 
 /// ProcessBranchOnPHI - We have an otherwise unthreadable conditional branch on

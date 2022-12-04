@@ -1387,14 +1387,14 @@ Instruction *InstCombiner::visitURem(BinaryOperator &I) {
     if (Value *ZOp1 = dyn_castZExtVal(Op1, ZOp0->getSrcTy()))
       return new ZExtInst(Builder->CreateURem(ZOp0->getOperand(0), ZOp1),
                           I.getType());
-
+#if 0
   // X urem Y -> X and Y-1, where Y is a power of 2,
   if (isKnownToBeAPowerOfTwo(Op1, DL, /*OrZero*/ true, 0, AC, &I, DT)) {
     Constant *N1 = Constant::getAllOnesValue(I.getType());
     Value *Add = Builder->CreateAdd(Op1, N1);
     return BinaryOperator::CreateAnd(Op0, Add);
   }
-
+#endif
   // 1 urem X -> zext(X != 1)
   if (match(Op0, m_One())) {
     Value *Cmp = Builder->CreateICmpNE(Op1, Op0);
