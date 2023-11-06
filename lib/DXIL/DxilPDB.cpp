@@ -176,6 +176,12 @@ struct MSFWriter {
   }
 
   void WriteToStream(raw_ostream &OS) {
+    // There are three blocks before the BlockAddr:
+    // - super block
+    // - FPM1
+    // - FPM2
+    const uint32_t NumBlocksBeforeBlockAddr = 3;
+
     const uint32_t StreamDirectorySizeInBytes = CalculateStreamDirectorySize();
     const uint32_t StreamDirectoryNumBlocks =
         GetNumBlocks(StreamDirectorySizeInBytes);
@@ -184,7 +190,7 @@ struct MSFWriter {
         StreamDirectoryNumBlocks * sizeof(support::ulittle32_t);
     const uint32_t BlockAddrNumBlocks = GetNumBlocks(BlockAddrSizeInBytes);
 
-    const uint32_t BlockAddrStart = 3;
+    const uint32_t BlockAddrStart = NumBlocksBeforeBlockAddr;
     const uint32_t StreamDirectoryStart = BlockAddrStart + BlockAddrNumBlocks;
     const uint32_t StreamStart =
         StreamDirectoryStart + StreamDirectoryNumBlocks;
@@ -194,10 +200,10 @@ struct MSFWriter {
       memcpy(SB.MagicBytes, kMsfMagic, sizeof(kMsfMagic));
       SB.BlockSize = kMsfBlockSize;
       SB.NumDirectoryBytes = StreamDirectorySizeInBytes;
-      SB.NumBlocks = 3 /*super block + FPM1 + FPM2*/ + m_NumStreamBlocks +
-                     StreamDirectoryNumBlocks + BlockAddrNumBlocks;
+      SB.NumBlocks = NumBlocksBeforeBlockAddr + BlockAddrNumBlocks +
+                     StreamDirectoryNumBlocks + m_NumStreamBlocks;
       SB.FreeBlockMapBlock = 1;
-      SB.BlockMapAddr = 3;
+      SB.BlockMapAddr = BlockAddrStart;
     }
 
     BlockWriter Writer(OS);
@@ -219,7 +225,7 @@ struct MSFWriter {
       }
       assert(BlockAddrSizeInBytes == sizeof(BlockAddr[0]) * BlockAddr.size());
       Writer.WriteBlocks(BlockAddrNumBlocks, BlockAddr.data(),
-                         BlockAddr.size());
+                         BlockAddr.size() * sizeof(BlockAddr[0]));
     }
 
     // Stream Directory. Describes where all the streams are
